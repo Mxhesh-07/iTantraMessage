@@ -107,4 +107,40 @@ object SessionKeys {
 
     /** The salt, exposed for the same reason. */
     fun salt(): ByteArray = SALT.copyOf()
+
+    /**
+     * A short, one-way tag for [key], for logs and the settings screen.
+     *
+     * ## Why this is safe to log when the key is not
+     *
+     * This is the first 4 bytes of SHA-256 over the key material. Recovering the key from it
+     * would require searching 2^256 candidates, so it discloses nothing about a key that is
+     * still 256 bits wide -- and it is not the key: no code path uses this value to
+     * encrypt, derive, or verify anything.
+     *
+     * ## Why it exists
+     *
+     * Because the failure this whole change addresses was *silent*. Two phones derived two
+     * different keys, everything looked healthy, and the only symptom was a message rendering
+     * as "Could not read that message" with no log line anywhere saying the keys had differed.
+     * Two devices reporting the same fingerprint is direct evidence that agreement worked,
+     * which is otherwise only inferable by sending a message and watching it decrypt.
+     */
+    fun fingerprint(key: SecretKey): String? {
+        val digest = java.security.MessageDigest.getInstance("SHA-256").digest(key.encoded)
+        val head = digest.copyOf(FINGERPRINT_BYTES)
+        val out = StringBuilder(FINGERPRINT_BYTES * 2)
+        for (b in head) {
+            val v = b.toInt() and 0xFF
+            out.append(HEX_DIGITS[v ushr 4])
+            out.append(HEX_DIGITS[v and 0x0F])
+        }
+        return out.toString()
+    }
+
+    /** Bytes of SHA-256 output kept. 4 bytes is 8 hex characters: enough to compare, short
+     * enough to read off a screen. */
+    private const val FINGERPRINT_BYTES = 4
+
+    private const val HEX_DIGITS = "0123456789abcdef"
 }

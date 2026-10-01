@@ -4,6 +4,7 @@ import android.util.Log
 import `in`.isro.sih26173.itantramessage.data.crypto.EncryptionManager
 import `in`.isro.sih26173.itantramessage.data.crypto.IdentityKey
 import `in`.isro.sih26173.itantramessage.data.crypto.SessionCrypto
+import `in`.isro.sih26173.itantramessage.data.crypto.SessionKeys
 import `in`.isro.sih26173.itantramessage.data.database.DeliveryStatus
 import `in`.isro.sih26173.itantramessage.data.database.MessageDao
 import `in`.isro.sih26173.itantramessage.data.database.MessageEntity
@@ -376,6 +377,19 @@ class MessageRepository(
 
         session = SessionCrypto(agreed)
         _peerDeviceId.value = announced.deviceId
+
+        // Logged on purpose. The defect this change fixes was silent: two devices derived two
+        // different keys, nothing complained, and the only symptom was a message rendering as
+        // "Could not read that message". A one-way fingerprint means the agreement can be
+        // confirmed from two logcats without sending a message, and without logging anything a
+        // reader could use. Two phones reporting the same value here is the evidence that the
+        // keys match.
+        Log.i(
+            TAG,
+            "agreed key for conversation $conversationId " +
+                "with ${announced.deviceId}, fingerprint " +
+                (SessionKeys.fingerprint(agreed) ?: "unavailable"),
+        )
 
         // The handshake is what makes queued messages sendable, so a newly keyed peer is
         // itself a reason to run the pump. Without this a message composed while the peer was

@@ -133,8 +133,22 @@ class AppContainer(
             // sending. Doing it on the connect tap means the first connection of a session
             // pays a TEE round trip while the UI is already spinning on "identifying".
             try {
-                if (!identityKeys.hasKeyPair() && identityKeys.ensureKeyPair()) {
-                    Log.i(TAG, "generated ECDH identity key pair")
+                // The false return is logged, not just the exception. This matters: the whole
+                // point of the ECDH work was a failure that was invisible on both devices, so
+                // "warm-up quietly did nothing" is not an acceptable outcome here. A device
+                // that cannot create an identity key cannot ever open a conversation, and the
+                // user deserves to be able to find that in a log rather than only by noticing
+                // that Connect never succeeds.
+                if (!identityKeys.hasKeyPair()) {
+                    if (identityKeys.ensureKeyPair()) {
+                        Log.i(TAG, "generated ECDH identity key pair")
+                    } else {
+                        Log.w(
+                            TAG,
+                            "the keystore refused to create an identity key pair; " +
+                                "this device cannot open a conversation until it can",
+                        )
+                    }
                 }
             } catch (t: CancellationException) {
                 throw t

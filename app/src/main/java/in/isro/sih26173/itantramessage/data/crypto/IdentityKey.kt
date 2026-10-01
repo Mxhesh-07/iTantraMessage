@@ -2,6 +2,7 @@ package `in`.isro.sih26173.itantramessage.data.crypto
 
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
+import android.util.Log
 import java.security.KeyFactory
 import java.security.KeyPairGenerator
 import java.security.KeyStore
@@ -110,10 +111,22 @@ class IdentityKey(
      * @return true if a pair is present afterwards. False means the Keystore refused, and the
      *   app can still run as a reader of its own database but cannot take part in a
      *   conversation -- so the caller must say so rather than carry on.
+     *
+     * ## Why the failure is logged rather than swallowed
+     *
+     * This returns false on a realme Narzo 10A (API 30) while succeeding on a Samsung
+     * Galaxy A14 (API 35), and `runCatching {}.getOrDefault(false)` reported that as the same
+     * bare `false` a missing keystore would produce. The caller could only log "the keystore
+     * refused", which names the symptom rather than the cause.
+     *
+     * Keystore rejections of EC key generation are *not* uniform across vendors, so the reason
+     * has to be read rather than predicted. Only the exception's class and message are
+     * logged, never a key or any key material, and this is a `Log.w` on a failure path -- see
+     * the logging rules in `docs/SECURITY.md`.
      */
     fun ensureKeyPair(): Boolean {
         if (hasKeyPair()) return true
-        return runCatching {
+        return try {
             val generator = KeyPairGenerator.getInstance(KEY_ALGORITHM, KEYSTORE_PROVIDER)
             generator.initialize(
                 KeyGenParameterSpec.Builder(
@@ -129,7 +142,10 @@ class IdentityKey(
             )
             generator.generateKeyPair()
             true
-        }.getOrDefault(false)
+        } catch (t: Throwable) {
+            Log.w(TAG, "could not create an EC key pair in $KEYSTORE_PROVIDER: ${t.javaClass.name}: ${t.message}")
+            false
+        }
     }
 
     /**
@@ -198,6 +214,8 @@ class IdentityKey(
     }
 
     companion object {
+        private const val TAG = "IdentityKey"
+
         private const val KEY_ALGORITHM = "EC"
         private const val KEY_AGREEMENT = "ECDH"
         private const val CURVE = "secp256r1"

@@ -3,6 +3,7 @@ package `in`.isro.sih26173.itantramessage.data.crypto
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -252,6 +253,44 @@ class HkdfTest {
         val first = SessionKeys.derive(secret(4), "IT-AAAAAA|IT-BBBBBB")!!.encoded
         val second = SessionKeys.derive(secret(4), "IT-AAAAAA|IT-BBBBBB")!!.encoded
         assertArrayEquals(first, second)
+    }
+
+    /**
+     * The fingerprint must identify a key and agree across devices.
+     *
+     * This is the evidence the hardware run will rely on: two phones logging the same
+     * fingerprint is direct proof the agreement produced the same key, rather than something
+     * inferred from a message happening to decrypt.
+     */
+    @Test
+    fun `the fingerprint agrees for the same key and differs for another`() {
+        val a1 = SessionKeys.derive(secret(1), "IT-AAAAAA|IT-BBBBBB")!!
+        val a2 = SessionKeys.derive(secret(1), "IT-AAAAAA|IT-BBBBBB")!!
+        val b = SessionKeys.derive(secret(1), "IT-CCCCCC|IT-DDDDDD")!!
+
+        assertNotNull(SessionKeys.fingerprint(a1))
+        assertEquals(
+            "two devices that agreed must report the same fingerprint",
+            SessionKeys.fingerprint(a1),
+            SessionKeys.fingerprint(a2),
+        )
+        assertNotEquals(SessionKeys.fingerprint(a1), SessionKeys.fingerprint(b))
+    }
+
+    @Test
+    fun `the fingerprint is 8 hex characters`() {
+        val fp = SessionKeys.fingerprint(SessionKeys.derive(secret(1), "IT-AAAAAA|IT-BBBBBB")!!)
+        assertEquals(8, fp!!.length)
+        assertTrue(fp.all { it in "0123456789abcdef" })
+    }
+
+    /** The fingerprint must not be the key, or logging it would be logging key material. */
+    @Test
+    fun `the fingerprint is not a prefix of the key`() {
+        val key = SessionKeys.derive(secret(7), "IT-AAAAAA|IT-BBBBBB")!!
+        val fp = SessionKeys.fingerprint(key)!!
+        val keyHex = key.encoded.joinToString("") { "%02x".format(it) }
+        assertFalse("fingerprint leaked key material", keyHex.startsWith(fp))
     }
 
     @Test
