@@ -14,7 +14,7 @@ Two devices, a few metres apart, Bluetooth on. That is the whole deployment.
 | | |
 |---|---|
 | version | 0.1.0 |
-| unit tests | **74 passing**, 0 failures |
+| unit tests | **95 passing**, 0 failures |
 | release APK | 1.28 MB, no `INTERNET` |
 | offline gate | passing, with a live negative control |
 | **two-device run** | **not done** |
@@ -84,7 +84,7 @@ means *this phone handed the bytes to Bluetooth*, not *the other phone received 
 | `docs/ERROR_HANDLING.md` | failure behaviour, retry, logging |
 | `docs/LIMITATIONS.md` | what is missing, and the `NOT MEASURED` list |
 | `docs/PERFORMANCE.md` | measured versus unmeasured, and how to measure |
-| `docs/TESTING.md` | the 74 tests, what they protect, what is untested |
+| `docs/TESTING.md` | the 95 tests, what they protect, what is untested |
 | `docs/COLOR.md` | palette and computed contrast ratios |
 | `docs/BUILD.md` | toolchain, versions, and why each is what it is |
 

@@ -2,7 +2,7 @@
 
 What is tested, what is not, and what each test is actually protecting.
 
-**74 unit tests, 0 failures.** No instrumentation tests. No two-device run. That summary is
+**95 unit tests, 0 failures.** No instrumentation tests. No completed two-device run. That summary is
 the most important thing in this file; everything below is detail.
 
 ---
@@ -192,6 +192,28 @@ Plus a test that the separator is safe — asserted rather than assumed, because
 every conversation resolving. If `DeviceIdentity`'s format changes, this fails with an
 explanation instead of in the field.
 
+### 4.5 `PeerHelloTest` — 21
+
+Added after the two-phone run, because `PeerHello.kt:45` documented a property as "asserted in
+`PeerHelloTest`" and **no such file existed**. A source comment claiming a test that is not
+there is worse than no comment: it reads as coverage and provides none.
+
+The four collision tests are the reason the file exists. `HELLO:` and the envelope magic must
+never be confusable, and nothing at runtime enforces it — there is no dispatch table that would
+catch an edit to `EnvelopeCodec.MAGIC`. Covered in both directions: a hello never decodes as an
+envelope, an envelope is never reported as a hello, and the envelope's first two bytes are
+pinned to `MAGIC`/`VERSION`.
+
+**The guard was proved able to fail.** `MAGIC` was temporarily changed from `0x49` to `0x48`
+so that it collided with the `HELLO` prefix; `hello prefix cannot begin an envelope` failed,
+2 tests failed in the suite, the build exited non-zero. The constant was then restored. A guard
+test that has never been shown to fail is an assumption with a test-shaped wrapper.
+
+Also covered: round-trip over every hex digit the generator can mint (exhaustive, not sampled),
+and rejection of lowercase hex, wrong lengths, non-hex characters, a trailing newline, a trailing
+NUL, non-UTF-8 id bytes, an over-long id, and — the important one — **an id containing `|`**,
+which would otherwise let an untrusted peer name a conversation that resolves to a third device.
+
 ---
 
 ## 5. Not tested
@@ -217,7 +239,7 @@ A unit test with an injected `SecretKey` would cover the envelope format, genera
 most of the file, and it is straightforward. It is not written, and this is the honest state
 rather than a claim that the code is simple enough not to need it.
 
-### 5.3 A crash that only an *old* phone could find
+### 5.2 A crash that only an *old* phone could find
 
 The most serious defect in this document, and the clearest argument for testing across a
 range of Android versions rather than on the newest device available.
@@ -239,7 +261,7 @@ java.lang.NoSuchMethodError: No virtual method nextInt(II)I in class Ljava/secur
 
 `FATAL EXCEPTION: main`, unrecoverable, reproducible on every tap that touched a peer.
 
-**Why every automated gate passed.** The build succeeded, the 74 unit tests passed, both script
+**Why every automated gate passed.** The build succeeded, every unit test passed, both script
 gates exited 0, and `aapt` confirmed the APK declared no `INTERNET`. All of that is true and
 all of it is irrelevant: nothing in this repository executes the code path. Lint does not check
 for API-level method availability on a JDK method reached through `java.util.Random`, and no
@@ -257,7 +279,7 @@ The general lesson: **`minSdk` is a promise about devices you are not holding.**
 means testing on the oldest supported version, or enabling core library desugaring and being
 explicit that the range is a compatibility shim rather than real platform support.
 
-### 5.2 A defect that only two phones could find
+### 5.3 A defect that only two phones could find
 
 Also found by running the release build on two handsets, and this one is the more serious of
 the two, because no amount of single-device testing would have surfaced it.
@@ -281,7 +303,7 @@ conversation key that no screen would ever query.
 **Why neither kind of test would have caught it.** A unit test would have passed, because
 `ConversationId.of` is correct in isolation -- it faithfully sorts and joins whatever two ids it
 is given. The defect was in *the argument*, one layer up, and only visible as an invariant
-across two call sites in two layers. Neither 74 unit tests nor a single-device run can express
+across two call sites in two layers. Neither the unit tests nor a single-device run can express
 "these two places must agree", because the disagreement only becomes observable when a value
 written by one is read by the other.
 
@@ -387,17 +409,61 @@ for any of these**, and no estimate appears in any document in this project.
 
 ---
 
-## 7. Two-device testing is blocked, and honestly
+## 7. Two-device testing: what has run, and what has not
 
-Every device-dependent item above needs two phones paired to each other. That has not happened
-for this app.
+Every device-dependent item in §5 needs two phones. That run has **started** and has already paid
+for itself twice — see §5.2 (a fatal crash on Android 11) and §5.3 (a conversation-key mismatch).
+Neither was reachable any other way. But it has not finished.
 
-Two constraints shaped everything measurable in the sibling Track A project, and both apply
-here:
+### 7.1 Observed on hardware
+
+Release build, two handsets, both bonded: a Samsung Galaxy A14 5G (`RZCW31EBSZD`, SM-A146B,
+**API 35**) and a realme Narzo 10A (`4TKNBADMCIWSNBYD`, RMX2020, **API 30**).
+
+| observation | evidence |
+|---|---|
+| both phones open, no crash on launch | `FATAL EXCEPTION` absent from logcat on both |
+| both install and declare no `INTERNET` | `dumpsys package` on both, on-device |
+| both accept incoming RFCOMM | `RfcommServer: listening on 00001101-...` on both |
+| the identification handshake completes | `PeerIdentity: peer E4:EC:E8:A4:32:C4 announced IT-D1EAA1` |
+| device ids are minted per device | `ItantraMessageApp: generated encryption key, generation 1` on both |
+
+That last row of the first table is the important one: the A14's device id was received,
+validated and persisted by the realme. The handshake is confirmed working **across two real
+phones**, which is more than has been true of anything else in this project.
+
+### 7.2 Not yet observed
+
+- **a message crossing the link in either direction.** No envelope has been confirmed delivered.
+- **payload decryption on a real peer.** Envelope encode/decode and the framing are unit-tested;
+  the AES-GCM path is `NOT MEASURED` (§5.1).
+- **persistence across an app restart** (Room read-back on a real device).
+- **queue retry** when the peer is absent and returns.
+- **any latency or throughput figure.** These stay `NOT MEASURED` unless timed with a stopwatch.
+  Nothing in this document should be read as a performance claim.
+
+### 7.3 Why a PC or emulator cannot substitute
 
 - **A PC Bluetooth adapter cannot be a BLE peripheral peer.** The Realtek adapter is internal
   and central-only. A PC can *observe* BLE but cannot *be* one.
 - **An Android emulator cannot be a BLE peer.** No Bluetooth radio.
 
-So the test is two handsets, not a phone and a laptop. Until that runs, `NOT MEASURED` is the
-accurate entry for end-to-end delivery, and it says so in `LIMITATIONS.md` §3.
+So the test is two handsets, not a phone and a laptop.
+
+### 7.4 What the two-phone run taught about testing generally
+
+Both defects in §5.2 and §5.3 were found by a **release build on two devices of different Android
+versions**, and neither was found by:
+
+- the compiler,
+- 95 unit tests,
+- `check_offline.sh`,
+- `check_docs.py`,
+- `aapt` confirming the APK declares no `INTERNET`.
+
+Every one of those was green and every one of them was irrelevant to the failure. A green gate
+suite is evidence about the gates' subjects, not about the app.
+
+The one methodological lesson worth generalising: **`minSdk` is a promise about devices you are
+not holding.** Testing on the newest phone available validates nothing about the oldest version
+you claim to support, and on this project the oldest phone was the only one that crashed.

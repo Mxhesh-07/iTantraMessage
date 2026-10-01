@@ -187,7 +187,7 @@ reproducible.
 ## 4. Testing gaps
 
 - **No instrumentation tests.** `androidTest` has a runner configured and no tests in it. Room,
-  the Keystore and the Bluetooth stack all need a device, so the 74 JVM tests cover pure logic
+  the Keystore and the Bluetooth stack all need a device, so the JVM tests cover pure logic
   only: framing, codec, state machine, conversation keys.
 - **No Robolectric.** Unavailable in the local dependency cache, and adding it would break the
   project's offline-reproducible build.
