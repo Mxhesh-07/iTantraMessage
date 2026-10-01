@@ -4,6 +4,7 @@ import android.app.Application
 import android.content.Context
 import android.util.Log
 import `in`.isro.sih26173.itantramessage.data.crypto.EncryptionManager
+import `in`.isro.sih26173.itantramessage.data.crypto.IdentityKey
 import `in`.isro.sih26173.itantramessage.data.database.AppDatabase
 import `in`.isro.sih26173.itantramessage.data.database.MessageDao
 import `in`.isro.sih26173.itantramessage.data.device.DeviceIdentity
@@ -75,6 +76,16 @@ class AppContainer(
 
     val encryption: EncryptionManager by lazy { EncryptionManager() }
 
+    /**
+     * This device's ECDH identity, for agreeing a message key with a peer.
+     *
+     * A separate object from [encryption] because the two do different jobs. [encryption]
+     * holds this device's own AES key and protects the local database; this holds an EC key
+     * pair whose private half never leaves the keystore, and it is what makes the *wire*
+     * readable by someone other than this phone.
+     */
+    val identityKeys: IdentityKey by lazy { IdentityKey() }
+
     val identity: DeviceIdentity by lazy { DeviceIdentity(context) }
 
     /** Which device id belongs to which Bluetooth address this app has met. */
@@ -87,6 +98,7 @@ class AppContainer(
             dao = messageDao,
             identity = identity,
             crypto = encryption,
+            identityKeys = identityKeys,
             scope = scope,
             peers = peers,
         )
@@ -114,6 +126,23 @@ class AppContainer(
                 // retried on the first Send, and crashing here would lose the user's
                 // message history over a background optimisation.
                 Log.w(TAG, "key warm-up failed: ${t.javaClass.simpleName}")
+            }
+
+            // The EC identity pair is warmed here too, for the same reason and with more
+            // force: generating it is on the path to *opening a conversation*, not just to
+            // sending. Doing it on the connect tap means the first connection of a session
+            // pays a TEE round trip while the UI is already spinning on "identifying".
+            try {
+                if (!identityKeys.hasKeyPair() && identityKeys.ensureKeyPair()) {
+                    Log.i(TAG, "generated ECDH identity key pair")
+                }
+            } catch (t: CancellationException) {
+                throw t
+            } catch (t: Throwable) {
+                // Same reasoning as above. [MessageRepository.announceSelf] will retry this
+                // on attach, and if it keeps failing the peer simply is never identified --
+                // a visible failure, not a silent one.
+                Log.w(TAG, "identity key warm-up failed: ${t.javaClass.simpleName}")
             }
         }
     }

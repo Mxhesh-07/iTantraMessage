@@ -2,6 +2,8 @@ package `in`.isro.sih26173.itantramessage.domain.repository
 
 import android.util.Log
 import `in`.isro.sih26173.itantramessage.data.crypto.EncryptionManager
+import `in`.isro.sih26173.itantramessage.data.crypto.IdentityKey
+import `in`.isro.sih26173.itantramessage.data.crypto.SessionCrypto
 import `in`.isro.sih26173.itantramessage.data.database.DeliveryStatus
 import `in`.isro.sih26173.itantramessage.data.database.MessageDao
 import `in`.isro.sih26173.itantramessage.data.database.MessageEntity
@@ -16,6 +18,7 @@ import `in`.isro.sih26173.itantramessage.domain.model.EnvelopeCodec
 import `in`.isro.sih26173.itantramessage.domain.model.MessageType
 import `in`.isro.sih26173.itantramessage.domain.model.PeerHello
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.ClosedReceiveChannelException
 import kotlinx.coroutines.delay
@@ -29,6 +32,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import java.util.UUID
 
 /**
@@ -49,11 +53,32 @@ import java.util.UUID
  * database row *is* the queue. That is what makes the app survive a process death
  * mid-conversation, and it is why [observeConversation] shows a queued message as a real
  * message with a "Queued" chip rather than as a spinner that disappears on restart.
+ *
+ * ## Two layers of encryption, and why both exist
+ *
+ * A message body is encrypted twice, with two different keys for two different adversaries,
+ * and mixing them up was the defect that made two phones unable to read each other at all.
+ *
+ *  * **[crypto]** -- this device's own Keystore key, generated locally. Protects the
+ *    database at rest. Correct on its own terms: nobody else should read this phone's disk.
+ *    It is the only key that can ever decrypt a *stored* row.
+ *  * **[session]** -- a key agreed with the peer over ECDH during the handshake. Protects
+ *    the bytes on the wire, where the adversary is whoever is listening on the radio.
+ *
+ * The original code used [crypto] for both. That made a phone perfectly able to read its own
+ * messages and completely unable to read anyone else's, because the sender encrypted with the
+ * key inside its own secure hardware and the receiver asked its *own* Keystore for *its*
+ * different key. On hardware the symptom was a message that arrived and rendered as "Could
+ * not read that message" -- see `docs/TESTING.md`.
+ *
+ * So the wire is encrypted with the session key and the stored row is encrypted with the local
+ * one, and there is no path anywhere that confuses them.
  */
 class MessageRepository(
     private val dao: MessageDao,
     private val identity: DeviceIdentity,
     private val crypto: EncryptionManager,
+    private val identityKeys: IdentityKey,
     private val scope: CoroutineScope,
     private val peers: PeerIdentity,
     private val clock: () -> Long = System::currentTimeMillis,
@@ -71,6 +96,37 @@ class MessageRepository(
      */
     private val _peerDeviceId = MutableStateFlow<String?>(null)
     val peerDeviceId: StateFlow<String?> = _peerDeviceId.asStateFlow()
+
+    /**
+     * The key agreed with [peerDeviceId], or null when there is no keyed peer.
+     *
+     * Volatile rather than held under [linkMutex]: it is written by the receive loop and read
+     * by the pump, which is a memory-visibility question and not a mutual-exclusion one.
+     * Taking the mutex would also mean holding it across a Keystore operation, and [attach]
+     * needs that lock.
+     *
+     * Invariant, and the reason [peerDeviceId] needs no separate "is keyed" flag: this is
+     * non-null **if and only if** [_peerDeviceId] is non-null. Both are set in [handleHello]
+     * and cleared together in [attach] and [detach]. The UI gates on [peerDeviceId] alone,
+     * which is safe only because of that pairing.
+     */
+    @Volatile private var session: SessionCrypto? = null
+
+    /**
+     * The agreed key for [conversationId], or null if there is none.
+     *
+     * Scoped rather than returned unconditionally because a session key for one conversation
+     * must never encrypt for another: the messages would be written correctly, transmitted
+     * correctly, and be unreadable at the far end with no clue why. Comparing the conversation
+     * the caller wants against the conversation the handshake actually established is the
+     * cheapest place to catch a mismatch.
+     */
+    private fun sessionFor(conversationId: String): SessionCrypto? {
+        val peer = _peerDeviceId.value ?: return null
+        val established = ConversationId.of(identity.id, peer).value
+        return if (established == conversationId) session else null
+    }
+
     /**
      * The current link, or null when disconnected.
      *
@@ -173,6 +229,10 @@ class MessageRepository(
             reassembler = Reassembler()
             link = newLink
             _peerDeviceId.value = null
+            // Cleared with the peer id, and for the same reason: the agreed key belongs to the
+            // peer that announced it, and a new link is an unidentified peer until its hello
+            // arrives. Keeping it would mean sending to the old peer under the new peer's key.
+            session = null
         }
 
         startReceiving(newLink)
@@ -181,19 +241,42 @@ class MessageRepository(
     }
 
     /**
-     * Tell the peer who we are.
+     * Tell the peer who we are, and give it the public half of our identity key.
      *
      * Sent on every attach, before any queued message is pumped. That order is load-bearing:
-     * the peer cannot build a conversation key for an incoming message until it knows our id,
-     * so a message arriving before our hello would be filed under a key the sender never uses
-     * -- a message the user sent and can never see again.
+     * the peer cannot build a conversation key for an incoming message until it knows our id
+     * *and* our public key, so a message arriving before our hello would be a message the peer
+     * cannot decrypt -- one the user sent and neither phone can ever read.
      *
      * A refused write is logged and otherwise ignored. The peer may already know our id from
      * an earlier session, in which case this frame is redundant, and there is nothing to
      * recover here: [requestPump] runs again on the next cycle.
      */
     private suspend fun announceSelf(link: ByteLink) {
-        val frame = Reassembler.frame(PeerHello.encode(identity.id))
+        val frame = withContext(Dispatchers.IO) {
+            // On Dispatchers.IO because both of these are blocking Keystore calls and this
+            // runs on the view model's Main dispatcher. Creating an EC key pair can take
+            // hundreds of milliseconds on a phone whose keystore is backed by a TEE, which on
+            // the main thread is an ANR the user sees as the app hanging on tap.
+            val publicKey = if (identityKeys.ensureKeyPair()) identityKeys.publicKeyHex() else null
+            if (publicKey == null) {
+                null
+            } else {
+                // runCatching because encode validates both fields, and this is the one place
+                // where a throw would become a crash on a connect tap rather than a log line.
+                runCatching { Reassembler.frame(PeerHello.encode(identity.id, publicKey)) }
+                    .getOrNull()
+            }
+        }
+
+        if (frame == null) {
+            // Sent nothing rather than something unusable. A hello with no key would be
+            // rejected by the peer's parser anyway, and "connected but cannot identify" is a
+            // far more honest state to be in than a handshake that fails at the far end.
+            Log.w(TAG, "no identity key available: cannot identify to the peer")
+            return
+        }
+
         if (!link.send(frame)) {
             Log.w(TAG, "could not send identification on the new link")
         }
@@ -208,6 +291,7 @@ class MessageRepository(
         }
         old?.close()
         _peerDeviceId.value = null
+        session = null
         receiveJob?.cancel()
         receiveJob = null
         pumpJob?.cancel()
@@ -255,21 +339,48 @@ class MessageRepository(
      * current conversation still works and the next session simply waits for a fresh
      * handshake. Persisting it under a placeholder would risk writing the peer's id under
      * *our own* address, which would make two different peers collide on one key.
+     *
+     * ## Agreeing the key is the part that used to be missing
+     *
+     * Recording the peer's id is not enough to read its messages. This now also runs ECDH
+     * against the public key the hello carried and installs the resulting [SessionCrypto].
+     *
+     * When agreement fails, the peer is deliberately left unidentified: [_peerDeviceId] stays
+     * null so the UI reports an identification failure. Publishing the id anyway would open a
+     * chat screen that accepts typing, queues the message, and cannot deliver it -- an
+     * application that looks like it is working while being incapable of sending. A visible
+     * failure is the honest outcome.
      */
     private fun handleHello(frame: ByteArray) {
         val announced = PeerHello.decode(frame)
         if (announced == null) {
-            Log.w(TAG, "ignored handshake with an unusable device id")
+            Log.w(TAG, "ignored handshake with an unusable device id or public key")
             return
         }
 
         val address = link?.peerAddress
         if (address == null) {
-            Log.w(TAG, "handshake from $announced not persisted: peer address unavailable")
+            Log.w(TAG, "handshake from ${announced.deviceId} not persisted: peer address unavailable")
         } else {
-            peers.remember(address, announced)
+            peers.remember(address, announced.deviceId)
         }
-        _peerDeviceId.value = announced
+
+        val conversationId = ConversationId.of(identity.id, announced.deviceId).value
+        val agreed = identityKeys.agree(announced.publicKeyHex, conversationId)
+        if (agreed == null) {
+            Log.w(TAG, "could not agree a key with ${announced.deviceId}")
+            session = null
+            _peerDeviceId.value = null
+            return
+        }
+
+        session = SessionCrypto(agreed)
+        _peerDeviceId.value = announced.deviceId
+
+        // The handshake is what makes queued messages sendable, so a newly keyed peer is
+        // itself a reason to run the pump. Without this a message composed while the peer was
+        // still identifying would sit in the queue until the next retry cycle noticed.
+        requestPump()
     }
 
     /**
@@ -310,36 +421,39 @@ class MessageRepository(
             return
         }
 
-        val plaintext = crypto.decryptToText(envelope.payload)
+        val conversationId = ConversationId.of(envelope.senderId, identity.id).value
+
+        // Checked before decrypting, and the reason is reported separately from a decryption
+        // failure. "No key for this sender" and "the ciphertext was bad" look identical in the
+        // UI -- both render as an unreadable message -- but they are different bugs, and
+        // conflating them is how the missing key agreement stayed invisible for so long.
+        val session = sessionFor(conversationId)
+        if (session == null) {
+            Log.w(TAG, "no agreed key for a frame from ${envelope.senderId}")
+            recordUnreadable(envelope, conversationId, "no key for the sender")
+            return
+        }
+
+        val plaintext = session.decryptToText(envelope.payload)
         if (plaintext == null) {
-            // Undecryptable: wrong key generation, tampered, or a peer running a different
-            // scheme. Recorded as FAILED rather than dropped silently, so the sender's retry
-            // does not loop forever against a message that can never be read.
-            dao.insert(
-                MessageEntity(
-                    messageId = envelope.messageId,
-                    conversationId = ConversationId.of(envelope.senderId, identity.id).value,
-                    senderId = envelope.senderId,
-                    receiverId = envelope.receiverId,
-                    ciphertext = envelope.payload,
-                    timestamp = envelope.timestamp,
-                    messageType = envelope.type.name,
-                    status = DeliveryStatus.FAILED.name,
-                    lastError = "could not decrypt",
-                ),
-            )
+            // Undecryptable: tampered, or the two sides derived different keys, which is what
+            // a mismatch in the handshake's `info` or salt would produce. Recorded as FAILED
+            // rather than dropped silently, so the sender's retry does not loop forever against
+            // a message that can never be read.
+            recordUnreadable(envelope, conversationId, "could not decrypt")
             return
         }
 
         val inserted = dao.insertIgnoringDuplicates(
             MessageEntity(
                 messageId = envelope.messageId,
-                conversationId = ConversationId.of(envelope.senderId, identity.id).value,
+                conversationId = conversationId,
                 senderId = envelope.senderId,
                 receiverId = identity.id,
-                // Stored re-encrypted under this device's own key, not verbatim from the
-                // wire. The wire format carries the sender's generation, which this device
-                // cannot decrypt later once that generation is pruned.
+                // Stored re-encrypted under this device's own key rather than verbatim from the
+                // wire. The wire payload is under a *session* key that goes away with the
+                // link; keeping it verbatim would mean history that cannot be read after the
+                // next session, on this device or on any other.
                 ciphertext = crypto.encrypt(plaintext),
                 timestamp = envelope.timestamp,
                 messageType = envelope.type.name,
@@ -350,6 +464,38 @@ class MessageRepository(
         if (inserted == -1L) {
             Log.d(TAG, "duplicate rejected by unique index")
         }
+    }
+
+    /**
+     * Store a frame that arrived but cannot be shown, with the reason.
+     *
+     * The row is kept rather than dropped for two reasons. The user needs to see that
+     * something arrived, so history does not silently lose messages; and the sender's retry
+     * needs a terminal state to stop against, or a message that can never be read would be
+     * retried until its budget ran out for no possible success.
+     *
+     * The payload is stored as it arrived. It is unreadable by this device either way, and
+     * storing it keeps the row honest about what was actually received -- which matters when
+     * the cause is a key mismatch, because the bytes are the only evidence.
+     */
+    private suspend fun recordUnreadable(
+        envelope: Envelope,
+        conversationId: String,
+        reason: String,
+    ) {
+        dao.insert(
+            MessageEntity(
+                messageId = envelope.messageId,
+                conversationId = conversationId,
+                senderId = envelope.senderId,
+                receiverId = envelope.receiverId,
+                ciphertext = envelope.payload,
+                timestamp = envelope.timestamp,
+                messageType = envelope.type.name,
+                status = DeliveryStatus.FAILED.name,
+                lastError = reason,
+            ),
+        )
     }
 
     // ---- the retry pump ---------------------------------------------------------------
@@ -379,7 +525,18 @@ class MessageRepository(
             val current = link ?: return // Nothing to send on; the next attach() pumps.
             val next = dao.pendingForDelivery().firstOrNull() ?: return // Queue is empty.
 
-            val sent = deliver(current, next)
+            // Not keyed with this peer's peer yet, so the payload cannot be encrypted for the
+            // wire. This returns without touching the row's retry counter, which is the
+            // important part: "not connected yet" is not a failed send, and counting it would
+            // burn a message's whole retry budget during the second or two the handshake
+            // takes. [handleHello] calls [requestPump] when the key lands.
+            val session = sessionFor(next.conversationId)
+            if (session == null) {
+                Log.d(TAG, "holding ${next.messageId}: no agreed key for this conversation")
+                return
+            }
+
+            val sent = deliver(current, next, session)
             if (sent) {
                 transition(next, DeliveryStatus.PENDING, DeliveryStatus.SENT)
                 continue // Try the next message immediately.
@@ -402,11 +559,34 @@ class MessageRepository(
     /**
      * Write one message to [link].
      *
-     * @return whether the transport accepted the bytes. `false` covers both "no link" and
-     *   "the write was rejected"; the two are indistinguishable from here and are treated
-     *   the same way, because the action is identical: retry later.
+     * @param session the key agreed with this message's peer, already checked by [pump] to
+     *   belong to this conversation.
+     * @return whether the transport accepted the bytes. `false` covers both "could not read
+     *   the row" and "the write was rejected"; the two are indistinguishable from here and are
+     *   treated the same way, because the action is identical: retry later.
+     *
+     * ## The payload is re-encrypted here, and that is the whole fix
+     *
+     * The stored row is under this device's Keystore key. Writing it to the wire verbatim
+     * would send ciphertext only this phone can open -- which is exactly what the code used to
+     * do, and why a message sent from the realme arrived on the Samsung and rendered as
+     * "Could not read that message".
+     *
+     * So the row is opened with the local key and immediately re-encrypted under the key both
+     * phones agreed. That costs one extra AES operation per outgoing message and nothing else:
+     * no schema change, no plaintext held anywhere longer than this function, and no path that
+     * leaves the message unprotected on the wire.
      */
-    private suspend fun deliver(link: ByteLink, entity: MessageEntity): Boolean {
+    private suspend fun deliver(
+        link: ByteLink,
+        entity: MessageEntity,
+        session: SessionCrypto,
+    ): Boolean {
+        // Opened with the *local* Keystore key, because that is how it was stored. Falling
+        // through to the retry path when the row cannot be read is honest rather than
+        // defensive: that happens after a keystore reset, and no amount of retrying fixes it.
+        val body = plaintextOf(entity) ?: return false
+
         val envelope = Envelope(
             messageId = entity.messageId,
             senderId = entity.senderId,
@@ -414,7 +594,7 @@ class MessageRepository(
             timestamp = entity.timestamp,
             type = MessageType.entries.firstOrNull { it.name == entity.messageType }
                 ?: return false,
-            payload = entity.ciphertext ?: return false,
+            payload = session.encrypt(body),
         )
 
         val bytes = EnvelopeCodec.encode(envelope)

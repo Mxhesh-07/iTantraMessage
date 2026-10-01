@@ -1,5 +1,6 @@
 package `in`.isro.sih26173.itantramessage.domain.model
 
+import `in`.isro.sih26173.itantramessage.data.crypto.IdentityKey
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
@@ -8,7 +9,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * Tests for the identification handshake.
+ * Tests for the identification and key-agreement handshake.
  *
  * ## What this file is for
  *
@@ -21,6 +22,11 @@ import org.junit.Test
  * rather than a crash. Asserting the property is the only thing that turns it into something
  * with a build failure attached.
  *
+ * The public-key half was added when the handshake started carrying this device's identity key,
+ * which is the missing half of the key agreement. Before that, the frame announced only an id,
+ * so two phones had no way to arrive at a shared secret and no message could be read by the
+ * receiver.
+ *
  * ## What this file deliberately does not test
  *
  * Nothing here touches a `BluetoothSocket`, a `Context`, or the Keystore. The handshake is
@@ -30,6 +36,15 @@ import org.junit.Test
 class PeerHelloTest {
 
     private val valid = "IT-1A2B3C"
+
+    /**
+     * A stand-in public key: 92 hex characters of well-formed hex.
+     *
+     * Not a real point. Decoding a real P-256 key needs a `KeyFactory`, which belongs to
+     * `IdentityKey` and to the hardware run. What matters here is that the parser accepts and
+     * refuses the *shape*, and this is a shape the parser cannot distinguish from a real key.
+     */
+    private val key = "ab".repeat(46)
 
     // ---- the collision property, asserted rather than asserted-in-a-comment --------------
 
@@ -64,7 +79,7 @@ class PeerHelloTest {
     /** The converse: a hello never decodes as an envelope, so it cannot reach the message path. */
     @Test
     fun `a hello is never reported as an envelope`() {
-        val frame = PeerHello.encode(valid)
+        val frame = PeerHello.encode(valid, key)
         assertTrue(PeerHello.isHello(frame))
         assertNull(
             "a hello must not be routable as a message",
@@ -84,7 +99,19 @@ class PeerHelloTest {
 
     @Test
     fun `encode then decode returns the announced id`() {
-        assertEquals(valid, PeerHello.decode(PeerHello.encode(valid)))
+        assertEquals(valid, PeerHello.decode(PeerHello.encode(valid, key))?.deviceId)
+    }
+
+    /**
+     * The key must survive the round trip byte for byte.
+     *
+     * Not merely "a key came back": if the encoder emitted upper case hex and the decoder
+     * accepted it, agreement would still work but the registry and any later comparison would
+     * disagree about the same value. Identity is compared by string in this app.
+     */
+    @Test
+    fun `encode then decode returns the announced public key unchanged`() {
+        assertEquals(key, PeerHello.decode(PeerHello.encode(valid, key))?.publicKeyHex)
     }
 
     @Test
@@ -96,24 +123,119 @@ class PeerHelloTest {
             for (b in hex) {
                 val id = "IT-$a$b${a}${b}AA"
                 assertTrue(id, PeerHello.isValid(id))
-                assertEquals(id, PeerHello.decode(PeerHello.encode(id)))
+                val decoded = PeerHello.decode(PeerHello.encode(id, key))
+                assertEquals(id, decoded?.deviceId)
+                assertEquals(key, decoded?.publicKeyHex)
             }
         }
     }
 
     @Test
-    fun `frame is the prefix followed by the id`() {
+    fun `frame is the prefix then id then separator then key`() {
         assertEquals(
-            "HELLO:IT-1A2B3C",
-            String(PeerHello.encode(valid), Charsets.UTF_8),
+            "HELLO:IT-1A2B3C:" + key,
+            String(PeerHello.encode(valid, key), Charsets.UTF_8),
         )
     }
 
     @Test
-    fun `frame byte length is prefix plus id`() {
+    fun `frame byte length is prefix plus id plus separator plus key`() {
         assertEquals(
-            PeerHello.PREFIX.length + valid.length,
-            PeerHello.encode(valid).size,
+            PeerHello.PREFIX.length + valid.length + PeerHello.SEPARATOR.length + key.length,
+            PeerHello.encode(valid, key).size,
+        )
+    }
+
+    @Test
+    fun `decodeDeviceId returns just the id`() {
+        assertEquals(valid, PeerHello.decodeDeviceId(PeerHello.encode(valid, key)))
+    }
+
+    // ---- a hello with no key is refused --------------------------------------------------
+
+    /**
+     * The old-format hello, which carried an id and nothing else.
+     *
+     * Refused rather than partially accepted. A peer that announced an id but no key cannot be
+     * keyed, and accepting it would produce a conversation that opens, accepts typing, and then
+     * fails to deliver anything -- the exact failure this change was made to remove.
+     */
+    @Test
+    fun `a hello with no public key is refused`() {
+        val old = (PeerHello.PREFIX + valid).toByteArray(Charsets.UTF_8)
+        assertTrue("the prefix is present", PeerHello.isHello(old))
+        assertNull("an id with no key cannot be agreed on", PeerHello.decode(old))
+    }
+
+    @Test
+    fun `a hello with an empty public key is refused`() {
+        assertNull(PeerHello.decode(("HELLO:" + valid + ":").toByteArray(Charsets.UTF_8)))
+        assertFalse(PeerHello.isValidPublicKey(""))
+    }
+
+    @Test
+    fun `a hello with an odd length public key is refused`() {
+        assertFalse(PeerHello.isValidPublicKey("abc"))
+        assertNull(PeerHello.decode(("HELLO:" + valid + ":abc").toByteArray(Charsets.UTF_8)))
+    }
+
+    @Test
+    fun `a hello with a non-hex public key is refused`() {
+        assertFalse(PeerHello.isValidPublicKey("zz"))
+        assertNull(
+            PeerHello.decode(("HELLO:" + valid + ":zzzz").toByteArray(Charsets.UTF_8)),
+        )
+    }
+
+    /**
+     * Upper case hex is refused.
+     *
+     * Device ids are upper case, so this looks inconsistent until it is spelled out: the id is
+     * generated by this app in one case and the key is generated by a `KeyFactory` whose
+     * encoding is lower case. Accepting either case would give a key that compares unequal to
+     * itself depending on who encoded it.
+     */
+    @Test
+    fun `a hello with an upper case public key is refused`() {
+        assertFalse(PeerHello.isValidPublicKey("ABCD"))
+        assertNull(PeerHello.decode(("HELLO:" + valid + ":ABCD").toByteArray(Charsets.UTF_8)))
+    }
+
+    /**
+     * The key length bound is real, not decorative.
+     *
+     * The hex check already rejects anything that is not hex, so this asserts the *cap*: it
+     * would fail if someone raised the cap in one class and not the other.
+     */
+    @Test
+    fun `an over-long public key is refused`() {
+        val overLong = "ab".repeat(PeerHello.MAX_PUBLIC_KEY_BYTES + 1)
+        assertFalse(PeerHello.isValidPublicKey(overLong))
+        assertNull(
+            PeerHello.decode(
+                ("HELLO:" + valid + ":" + overLong).toByteArray(Charsets.UTF_8),
+            ),
+        )
+    }
+
+    @Test
+    fun `the key cap admits the maximum`() {
+        assertTrue(PeerHello.isValidPublicKey("ab".repeat(PeerHello.MAX_PUBLIC_KEY_BYTES)))
+    }
+
+    /**
+     * The parser and the agreement step must agree about the cap.
+     *
+     * `MAX_PUBLIC_KEY_BYTES` is a compile-time constant, so this compares values rather than
+     * loading the Keystore-backed class. If the two ever diverge, one of them is rejecting
+     * something the other accepted, and the handshake fails for no visible reason.
+     */
+    @Test
+    fun `the key cap matches the one the agreement step enforces`() {
+        assertEquals(
+            "PeerHello and IdentityKey must agree on the largest acceptable public key",
+            IdentityKey.MAX_PUBLIC_KEY_BYTES,
+            PeerHello.MAX_PUBLIC_KEY_BYTES,
         )
     }
 
@@ -132,14 +254,16 @@ class PeerHelloTest {
     fun `an id carrying the conversation separator is refused`() {
         val forged = "IT-1A2B3C|IT-9F9F9F"
         assertFalse(PeerHello.isValid(forged))
-        assertNull(PeerHello.decode(forged.toByteArray(Charsets.UTF_8)))
+        assertNull(PeerHello.decode(("HELLO:" + forged + ":" + key).toByteArray(Charsets.UTF_8)))
     }
 
     @Test
     fun `a forged id cannot name a different conversation`() {
         // The whole point of refusing the above: parse must never see it at all.
         val forged = "IT-1A2B3C|IT-9F9F9F"
-        val decoded = PeerHello.decode(("HELLO:" + forged).toByteArray(Charsets.UTF_8))
+        val decoded = PeerHello.decode(
+            ("HELLO:" + forged + ":" + key).toByteArray(Charsets.UTF_8),
+        )
         assertNull(decoded)
 
         // And with a null decode, the registry has nothing to persist, so nothing to parse.
@@ -157,6 +281,9 @@ class PeerHelloTest {
         assertFalse(PeerHello.isValid("it-1a2b3c"))
         assertFalse(PeerHello.isValid("IT-1a2b3c"))
         assertNull(PeerHello.decode("HELLO:IT-1a2b3c".toByteArray(Charsets.UTF_8)))
+        assertNull(
+            PeerHello.decode(("HELLO:IT-1a2b3c:" + key).toByteArray(Charsets.UTF_8)),
+        )
     }
 
     @Test
@@ -202,12 +329,24 @@ class PeerHelloTest {
         // Sending it would put an unparseable value on the wire and store it in the registry;
         // failing loudly at the call site is the only version of this that is debuggable.
         val threw = try {
-            PeerHello.encode("not-an-id")
+            PeerHello.encode("not-an-id", key)
             false
         } catch (e: IllegalArgumentException) {
             true
         }
         assertTrue("encode must reject a malformed id", threw)
+    }
+
+    /** The same, for the key: the app refuses to announce an identity it cannot agree with. */
+    @Test
+    fun `encode throws rather than sending a malformed public key`() {
+        val threw = try {
+            PeerHello.encode(valid, "not-hex")
+            false
+        } catch (e: IllegalArgumentException) {
+            true
+        }
+        assertTrue("encode must reject a malformed key", threw)
     }
 
     // ---- frames that are not handshakes at all -----------------------------------------
@@ -245,7 +384,7 @@ class PeerHelloTest {
     @Test
     fun `an id padded with a nul byte is refused`() {
         // A fixed-width reader elsewhere might leave the terminator attached.
-        val frame = PeerHello.PREFIX.toByteArray(Charsets.UTF_8) + "IT-1A2B3C ".toByteArray(Charsets.UTF_8)
+        val frame = PeerHello.PREFIX.toByteArray(Charsets.UTF_8) + "IT-1A2B3C ".toByteArray(Charsets.UTF_8)
         assertNull(PeerHello.decode(frame))
     }
 
