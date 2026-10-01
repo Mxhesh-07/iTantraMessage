@@ -217,6 +217,51 @@ A unit test with an injected `SecretKey` would cover the envelope format, genera
 most of the file, and it is straightforward. It is not written, and this is the honest state
 rather than a claim that the code is simple enough not to need it.
 
+### 5.2 A defect that only two phones could find
+
+Also found by running the release build on two handsets, and this one is the more serious of
+the two, because no amount of single-device testing would have surfaced it.
+
+**`MessageRepository` and `HomeViewModel` disagreed about what a conversation is called.**
+
+`HomeViewModel.connect` built the conversation key as `ConversationId.of(identity.id,
+device.address)` -- a device id and a Bluetooth **MAC address**. `MessageRepository` built the
+same key from two **device ids**, using `envelope.senderId` on the receive path and the id the
+sender passed to `send()` on the send path.
+
+Those two keys never match. The observable result:
+
+- the chat screen opened on a conversation with no rows in it, forever;
+- every message the user sent was written under the repository's key, which nothing read;
+- the send reported success at every layer.
+
+No error, no crash, no log line. Messages were being sent, stored, and delivered to a
+conversation key that no screen would ever query.
+
+**Why neither kind of test would have caught it.** A unit test would have passed, because
+`ConversationId.of` is correct in isolation -- it faithfully sorts and joins whatever two ids it
+is given. The defect was in *the argument*, one layer up, and only visible as an invariant
+across two call sites in two layers. Neither 74 unit tests nor a single-device run can express
+"these two places must agree", because the disagreement only becomes observable when a value
+written by one is read by the other.
+
+**Fixed** by exchanging device ids instead of inferring them, in `PeerHello`:
+
+- `PeerHello` -- a handshake frame, deliberately *not* an `Envelope` (an envelope has no
+  meaningful `receiverId` before the peer is known, and its payload is ciphertext under a key
+  that does not exist yet). Distinguished by the `HELLO:` prefix, which cannot collide with an
+  envelope because envelope magic is `0x49 0x01` and the prefix begins `0x48`.
+- `PeerIdentity` -- persists which device id belongs to which MAC address.
+- `MessageRepository.peerDeviceId` -- publishes the announced id; resets on every `attach`.
+- `HomeViewModel` -- waits for that id before navigating, bounded by `IDENTIFY_TIMEOUT_MS`, and
+  falls back to the persisted registry when it already knows the peer.
+
+The deeper reason a handshake is unavoidable: the device id *cannot* be derived from anything
+both ends can see. Hashing the MAC would avoid the exchange, and is impossible anyway --
+`BluetoothAdapter.getAddress()` is a hidden API from Android 12, so a modern handset cannot
+read its own address. The id is random and private by construction, so nobody else knows it
+until it is sent.
+
 #### 5.1.1 And this gap has already cost a real defect
 
 This section is not hypothetical. The first defect found by running the release build on two

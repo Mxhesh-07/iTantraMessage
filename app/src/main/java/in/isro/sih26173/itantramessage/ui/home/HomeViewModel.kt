@@ -14,6 +14,7 @@ import `in`.isro.sih26173.itantramessage.data.nearby.Transport
 import `in`.isro.sih26173.itantramessage.domain.model.ConversationId
 import `in`.isro.sih26173.itantramessage.domain.repository.MessageRepository
 import `in`.isro.sih26173.itantramessage.data.device.PeerIdentity
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -106,6 +107,53 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
 
         observeQueueDepth()
         observePeerIdentification()
+        listenForIncoming()
+    }
+
+    /**
+     * Answer RFCOMM connections initiated by the other phone.
+     *
+     * Started at construction rather than when the user taps a device, because this is what
+     * makes the *other* phone's tap work. Only one phone can be the initiator for a given
+     * connection, so whichever app the user taps first is dialling and whichever they did not
+     * tap must already be listening -- and there is no way to know in advance which that is.
+     * Listening from the moment the Home screen exists is the only arrangement that works
+     * without the user being asked to choose a role.
+     *
+     * The collection is scoped to [viewModelScope], so leaving the screen closes the listening
+     * socket and releases the radio. That matters for battery: a listening socket holds the
+     * adapter awake, and an app that listens while backgrounded is the usual way a "no
+     * internet" messenger turns out to cost 4% an hour doing nothing.
+     *
+     * An incoming link replaces whatever is attached, so answering a second peer disconnects
+     * the first. The app holds one conversation at a time by design; see
+     * `docs/LIMITATIONS.md`.
+     */
+    private fun listenForIncoming() {
+        viewModelScope.launch {
+            try {
+                nearby.acceptIncoming().collect { link: ByteLink ->
+                    Log.i(TAG, "accepted an incoming connection from ${link.peerLabel}")
+                    _state.update {
+                        it.copy(
+                            isConnecting = false,
+                            connectingTo = null,
+                            message = "${link.peerLabel} connected",
+                        )
+                    }
+                    repository.attach(link)
+                }
+            } catch (t: CancellationException) {
+                throw t // Leaving the screen is not a failure.
+            } catch (t: Throwable) {
+                // A listener that cannot start must not take the rest of the screen with it.
+                // The app still works as a dialer; it just cannot be dialled.
+                Log.w(TAG, "incoming listener stopped: ${t.javaClass.simpleName}")
+                _state.update {
+                    it.copy(message = "This phone cannot accept incoming connections.")
+                }
+            }
+        }
     }
 
     /**

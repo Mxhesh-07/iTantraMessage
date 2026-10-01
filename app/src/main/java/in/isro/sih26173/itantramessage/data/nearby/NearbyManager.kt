@@ -249,6 +249,19 @@ class NearbyManager(private val context: Context) {
     }
 
     /**
+     * Accept incoming RFCOMM connections, for as long as the returned flow is collected.
+     *
+     * The counterpart to [openLink]. RFCOMM is not symmetric: `openLink` dials a peer that is
+     * already listening, so without this a peer that is not the initiator is unreachable and
+     * the first two-phone run failed with `read ret: -1` against a phone that was perfectly
+     * healthy and simply had nothing listening.
+     *
+     * Held here rather than in the UI for the same reason as the adapter: it resolves its own
+     * hardware, so no caller can start a listener it has no permission for.
+     */
+    fun acceptIncoming(): Flow<ByteLink> = RfcommServer(adapter).acceptIncoming(SERVICE_NAME)
+
+    /**
      * This device's own Bluetooth address, or null where the platform will not say.
      *
      * Needed only to hide this phone from its own device list -- a phone is always within
@@ -304,6 +317,15 @@ class NearbyManager(private val context: Context) {
     }
 
     private companion object {
+        /**
+         * SPP service name announced in SDP.
+         *
+         * A convention, not a security control: Android pairs it with the UUID, and any
+         * device using the same UUID is reachable regardless of this string. It exists so
+         * the service is identifiable in a system-level SDP dump.
+         */
+        private const val SERVICE_NAME = "iTantra Message"
+
         const val TAG = "NearbyManager"
         const val PERMISSION_BLUETOOTH = "android.permission.BLUETOOTH"
         const val PERMISSION_SCAN = "android.permission.BLUETOOTH_SCAN"

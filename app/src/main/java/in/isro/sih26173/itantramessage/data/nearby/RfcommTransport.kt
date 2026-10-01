@@ -71,8 +71,16 @@ import kotlin.coroutines.resume
 @SuppressLint("MissingPermission") // Callers check NearbyManager.hasRequiredPermissions() first.
 class RfcommTransport private constructor(
     private val adapter: BluetoothAdapter?,
-    private val device: BluetoothDevice,
+    private val device: BluetoothDevice?,
     private val deviceName: String,
+    /**
+     * Address override, used only when this transport wraps a socket somebody else accepted.
+     *
+     * The peer's address normally comes from the [BluetoothDevice] we dialled. On the
+     * accepting side there is no such device handle until after `accept()` returns, so the
+     * address is passed in rather than derived.
+     */
+    private val addressOverride: String? = null,
 ) : ByteLink {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -103,7 +111,8 @@ class RfcommTransport private constructor(
      * disables the identification handshake and the UI says so, which is honest. An empty
      * string would silently key a lookup that never matches.
      */
-    override val peerAddress: String? = runCatching { device.address }.getOrNull()
+    override val peerAddress: String? = addressOverride
+        ?: runCatching { device?.address }.getOrNull()
 
     /**
      * Open a socket to [device].
@@ -180,7 +189,10 @@ class RfcommTransport private constructor(
      */
     @SuppressLint("MissingPermission") // Caller checked permissions before constructing.
     private fun openSocket(): BluetoothSocket {
-        val candidate = device.createRfcommSocketToServiceRecord(SPP_UUID)
+        val target = checkNotNull(device) {
+            "openSocket() on a transport that did not dial a device"
+        }
+        val candidate = target.createRfcommSocketToServiceRecord(SPP_UUID)
 
         // NOTE: no SDP discovery call is made here. `BluetoothSocket.startServiceDiscovery()`
         // does not exist in the public SDK -- an early draft of this class called it and
@@ -367,6 +379,45 @@ class RfcommTransport private constructor(
 
             val transport = RfcommTransport(adapter, device, name)
             transport.connect().map { transport }
+        }
+        /**
+         * Wrap a socket that somebody else opened, and start pumping it.
+         *
+         * ## Why this exists
+         *
+         * Found by connecting two real phones for the first time. The app only ever *dialled*:
+         * `createRfcommSocketToServiceRecord` does an SDP lookup and connects to a service that
+         * is already listening. With no `accept()` anywhere in the codebase, nothing was ever
+         * listening, so the dialling phone got
+         *
+         *     read failed, socket might closed or timeout, read ret: -1
+         *
+         * which is Android's way of saying "I dialled and nobody answered".
+         *
+         * Half a P2P transport. A chat app where both parties must dial each other at the same
+         * instant is not peer-to-peer, it is a race that usually loses.
+         *
+         * The reader and writer are the same code as the dialling path, deliberately: a link is a
+         * link once the socket is up, and the only difference is which side opened it. Keeping
+         * them identical is what stops the two paths drifting into different framing behaviour.
+         */
+        fun accepted(
+            socket: BluetoothSocket,
+            peerAddress: String?,
+            peerName: String,
+        ): RfcommTransport {
+            val transport = RfcommTransport(
+                adapter = null,
+                device = null,
+                deviceName = peerName,
+                addressOverride = peerAddress,
+            )
+            transport.socket = socket
+            transport.startReader()
+            transport.startWriter()
+            transport._open.value = true
+            Log.i(TAG, "RFCOMM accepted from $peerName")
+            return transport
         }
     }
 }
