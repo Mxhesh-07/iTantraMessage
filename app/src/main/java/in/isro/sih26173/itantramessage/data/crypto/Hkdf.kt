@@ -8,11 +8,11 @@ import javax.crypto.spec.SecretKeySpec
  *
  * ## Why this is hand-written
  *
- * The platform has no HKDF the app can use. `KeyAgreement` produces a raw shared secret of
- * variable length with no domain separation in it, and using that raw output directly as an
- * AES key is the classic mistake: nothing binds the resulting key to this protocol, this
- * version, or this pair of devices, so the same ECDH output would be a valid message key for
- * every conversation on the radio and every future version of the app.
+ * The platform has no HKDF the app can use. A raw agreed secret is just bytes with no domain
+ * separation in it, and using that directly as an AES key is the classic mistake: nothing binds
+ * the resulting key to this protocol, this version, or this pair of devices, so the same agreed
+ * material would be a valid message key for every conversation on the radio and every future
+ * version of the app.
  *
  * HKDF is the standard repair and it is short enough to be worth owning. The two vectors in
  * `HkdfTest` are RFC 5869 test cases 1 and 3, checked against an independent implementation
@@ -20,7 +20,7 @@ import javax.crypto.spec.SecretKeySpec
  *
  * ## Why Android's `SecretKeyFactory("Pbkdf2WithHmacSha256")` is not used instead
  *
- * It cannot: PBKDF2 is for stretching a low-entropy secret, and a 256-bit ECDH secret needs no
+ * It cannot: PBKDF2 is for stretching a low-entropy secret, and a 256-bit agreed secret needs no
  * stretching. Using it would add a slow, pointless KDF and still leave the derivation unbound
  * from the protocol without extra `info`-like plumbing that PBKDF2 has no clean equivalent for.
  *

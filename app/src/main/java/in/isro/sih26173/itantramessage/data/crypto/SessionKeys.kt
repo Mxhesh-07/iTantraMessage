@@ -4,7 +4,8 @@ import javax.crypto.SecretKey
 import javax.crypto.spec.SecretKeySpec
 
 /**
- * Turns an ECDH shared secret into the AES key that protects one conversation.
+ * Turns the material both sides agreed during the handshake into the AES key that protects one
+ * conversation.
  *
  * ## The defect this replaces
  *
@@ -18,14 +19,20 @@ import javax.crypto.spec.SecretKeySpec
  *
  * ## What this does instead
  *
- * Both devices run ECDH over the link, arrive at the same shared secret, and derive the same
- * AES key from it. Neither key is ever transmitted; only the public halves are, in the
- * identification handshake.
+ * Both devices arrive at the same 64 bytes of key material and derive the same AES key from it.
+ * Neither private key is ever transmitted; only public halves and one RSA-wrapped contribution
+ * each, in the handshake. See [IdentityKey] for why the transport is RSA and not ECDH, which is
+ * a measurement about two specific handsets rather than a preference.
+ *
+ * [combine] is where the two sides' contributions are put together. It is deliberately a pure
+ * function over bytes and device ids, with no Keystore and no Android types, because this is the
+ * step whose entire job is to produce the same answer on two devices -- and that is precisely
+ * the step that cannot be tested on one device and would be invisible if it were wrong.
  *
  * ## Why the conversation is mixed in
  *
- * The ECDH output is bound to the *pair* of keys, not to a conversation, so the same 32 bytes
- * would otherwise be the message key for every conversation those two phones ever have. A
+ * The agreed material is bound to the *pair* of devices, not to a conversation, so the same 64
+ * bytes would otherwise be the message key for every conversation those two phones ever have. A
  * message is authenticated with GCM but not *named* with it, so a ciphertext from one
  * conversation would decrypt cleanly in another and the receiver could not tell which it was.
  * Putting the conversation id in HKDF's `info` makes that impossible without transmitting
@@ -44,10 +51,13 @@ import javax.crypto.spec.SecretKeySpec
  *
  * ## Why the secret is wiped here
  *
- * [derive] overwrites the caller's `sharedSecret` array. This is the only place the raw ECDH
- * output exists in the clear, and a spec that says "do not keep the secret" but leaves the
+ * [derive] overwrites the caller's `sharedSecret` array. This is the only place the combined key
+ * material exists in the clear, and a spec that says "do not keep the secret" but leaves the
  * array in a coroutine stack for the garbage collector to deal with has not really said it.
  * The caller must not reuse the array, which is why this is documented rather than silent.
+ *
+ * The two *contributions* are not wiped here -- [combine] explains why the caller keeps them --
+ * so each side's 32 bytes outlive this call until the link is torn down.
  */
 object SessionKeys {
 
@@ -56,14 +66,77 @@ object SessionKeys {
 
     const val KEY_SIZE_BITS = KEY_SIZE_BYTES * 8
 
+    /** Bytes each side contributes before they are combined. See [combine]. */
+    const val CONTRIBUTION_BYTES = 32
+
     private val SALT = "itantra-message/v1/session-salt".toByteArray(Charsets.UTF_8)
 
     private const val INFO_PREFIX = "itantra-message/v1/session|"
 
     /**
+     * Put the two sides' contributions together, in an order both sides compute the same way.
+     *
+     * ## The problem this solves
+     *
+     * RSA key transport gives each device a wrapped copy of the *other* side's contribution, and
+     * its own contribution never leaves the device. So each side holds two 32-byte values in an
+     * order that depends on which side is looking: the phone that dialled holds its own first,
+     * the phone that answered holds its own second. Concatenating in "my contribution first"
+     * order would produce two different 64-byte strings and therefore two different keys -- the
+     * same silent failure as no agreement at all, arrived at more slowly.
+     *
+     * The fix is to order by something both sides already agree on. The device id is in both
+     * hellos, so comparing them gives a total order that does not depend on who dialled, who
+     * answered, or what order frames arrived in.
+     *
+     * ## Why the ids are checked before they are compared
+     *
+     * Two cases, and both are refused rather than handled:
+     *
+     *  - **Equal ids**, which make the ordering ambiguous. The fallback would be "pick one",
+     *    which is exactly the thing that must not happen. Two devices claiming the same id
+     *    cannot hold a conversation anyway: [ConversationId] would collapse them into one, so
+     *    messages would be attributed to a peer that does not exist.
+     *  - **An empty id**, which sorts before every real one and would otherwise be accepted,
+     *    producing a key for a conversation with a participant that does not exist. The shape
+     *    of an id is checked at the frame boundary by `PeerHello`; this is the same rule at the
+     *    byte boundary, because this function is reachable from more than one path.
+     *
+     * ## Why this does not wipe its inputs
+     *
+     * [derive] does wipe the secret it is handed, because a secret is handed straight to it and
+     * never reused. These are different: the caller's own contribution is a live field that it
+     * may still need, and wiping it here would mean the handshake could only complete on the
+     * side that received a contribution first. The caller owns the wiping, and the class docs
+     * of [IdentityKey.wrap] say the same thing about the same value.
+     *
+     * @return the two contributions concatenated in device-id order, or null if either
+     *   contribution is empty or either id is empty or the two ids are equal.
+     */
+    fun combine(
+        ourDeviceId: String,
+        ourContribution: ByteArray,
+        theirDeviceId: String,
+        theirContribution: ByteArray,
+    ): ByteArray? {
+        if (ourContribution.isEmpty() || theirContribution.isEmpty()) return null
+        if (ourDeviceId.isEmpty() || theirDeviceId.isEmpty()) return null
+        if (ourDeviceId == theirDeviceId) return null
+
+        val weComeFirst = ourDeviceId < theirDeviceId
+        val first = if (weComeFirst) ourContribution else theirContribution
+        val second = if (weComeFirst) theirContribution else ourContribution
+        return ByteArray(first.size + second.size).also {
+            first.copyInto(it, 0)
+            second.copyInto(it, first.size)
+        }
+    }
+
+    /**
      * Derive the message key for one conversation.
      *
-     * @param sharedSecret raw ECDH output. **Overwritten with zeroes before returning.**
+     * @param sharedSecret the 64 bytes from [combine]. **Overwritten with zeroes before
+     *   returning.**
      * @param conversationId the conversation both devices computed identically.
      * @return a fresh AES key, or null if the secret is not a usable length.
      *

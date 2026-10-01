@@ -1,5 +1,7 @@
 package `in`.isro.sih26173.itantramessage.domain.model
 
+import `in`.isro.sih26173.itantramessage.data.crypto.IdentityKey
+
 /**
  * The identification and key-agreement handshake: each side announces its device id **and its
  * public key** once per link.
@@ -25,10 +27,13 @@ package `in`.isro.sih26173.itantramessage.domain.model
  * together means one frame, one wait, and one place where the peer's claims about itself are
  * validated.
  *
- * The frame is about 200 bytes of ASCII rather than the nine it used to be. It still costs one
- * write on a link that is already open, and the alternative -- opening a conversation
- * optimistically and discovering afterwards that the peer cannot be keyed -- is the failure
- * this class exists to prevent.
+ * The frame is about 600 bytes of ASCII rather than the nine it used to be: the RSA
+ * `SubjectPublicKeyInfo` is 294 bytes and hex costs 2x. It still costs one write on a link that
+ * is already open, and the alternative -- opening a conversation optimistically and discovering
+ * afterwards that the peer cannot be keyed -- is the failure this class exists to prevent.
+ *
+ * The wrapped contribution that completes the handshake is a second frame, [PeerSecret], because
+ * it is encrypted to the peer's key and so cannot exist before this one has been received.
  *
  * ## Why a hello without a public key is rejected outright
  *
@@ -104,12 +109,14 @@ object PeerHello {
     /**
      * Longest accepted public key, in bytes.
      *
-     * A P-256 `SubjectPublicKeyInfo` is about 91 bytes. The ceiling matches
-     * [in.isro.sih26173.itantramessage.data.crypto.IdentityKey.MAX_PUBLIC_KEY_BYTES] and is
-     * asserted against it in `PeerHelloTest`, so the parser and the agreement step cannot
-     * disagree about what counts as a key.
+     * A 2048-bit RSA `SubjectPublicKeyInfo` is 294 bytes. The ceiling is declared from
+     * [in.isro.sih26173.itantramessage.data.crypto.IdentityKey.MAX_PUBLIC_KEY_BYTES] rather than
+     * repeated, so the parser and the transport step cannot drift apart into accepting different
+     * key sizes -- which would be a rejection at the far end with no clue why. `PeerHelloTest`
+     * pins it against real 2048- and 4096-bit key sizes instead of against a literal, so the
+     * guarantee survives the key size being changed on one side only.
      */
-    const val MAX_PUBLIC_KEY_BYTES = 192
+    const val MAX_PUBLIC_KEY_BYTES = IdentityKey.MAX_PUBLIC_KEY_BYTES
 
     /**
      * The shape [in.isro.sih26173.itantramessage.data.device.DeviceIdentity] mints.

@@ -77,10 +77,10 @@ class AppContainer(
     val encryption: EncryptionManager by lazy { EncryptionManager() }
 
     /**
-     * This device's ECDH identity, for agreeing a message key with a peer.
+     * This device's identity key, used to agree a message key with a peer.
      *
      * A separate object from [encryption] because the two do different jobs. [encryption]
-     * holds this device's own AES key and protects the local database; this holds an EC key
+     * holds this device's own AES key and protects the local database; this holds an RSA key
      * pair whose private half never leaves the keystore, and it is what makes the *wire*
      * readable by someone other than this phone.
      */
@@ -134,14 +134,14 @@ class AppContainer(
             // pays a TEE round trip while the UI is already spinning on "identifying".
             try {
                 // The false return is logged, not just the exception. This matters: the whole
-                // point of the ECDH work was a failure that was invisible on both devices, so
-                // "warm-up quietly did nothing" is not an acceptable outcome here. A device
-                // that cannot create an identity key cannot ever open a conversation, and the
-                // user deserves to be able to find that in a log rather than only by noticing
+                // point of the key-agreement work was a failure that was invisible on both
+                // devices, so "warm-up quietly did nothing" is not an acceptable outcome here. A
+                // device that cannot create an identity key cannot ever open a conversation, and
+                // the user deserves to be able to find that in a log rather than only by noticing
                 // that Connect never succeeds.
                 if (!identityKeys.hasKeyPair()) {
                     if (identityKeys.ensureKeyPair()) {
-                        Log.i(TAG, "generated ECDH identity key pair")
+                        Log.i(TAG, "generated RSA identity key pair")
                     } else {
                         Log.w(
                             TAG,

@@ -2,6 +2,7 @@ package `in`.isro.sih26173.itantramessage.domain.repository
 
 import android.util.Log
 import `in`.isro.sih26173.itantramessage.data.crypto.EncryptionManager
+import `in`.isro.sih26173.itantramessage.data.crypto.Hex
 import `in`.isro.sih26173.itantramessage.data.crypto.IdentityKey
 import `in`.isro.sih26173.itantramessage.data.crypto.SessionCrypto
 import `in`.isro.sih26173.itantramessage.data.crypto.SessionKeys
@@ -18,6 +19,7 @@ import `in`.isro.sih26173.itantramessage.domain.model.Envelope
 import `in`.isro.sih26173.itantramessage.domain.model.EnvelopeCodec
 import `in`.isro.sih26173.itantramessage.domain.model.MessageType
 import `in`.isro.sih26173.itantramessage.domain.model.PeerHello
+import `in`.isro.sih26173.itantramessage.domain.model.PeerSecret
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -63,7 +65,8 @@ import java.util.UUID
  *  * **[crypto]** -- this device's own Keystore key, generated locally. Protects the
  *    database at rest. Correct on its own terms: nobody else should read this phone's disk.
  *    It is the only key that can ever decrypt a *stored* row.
- *  * **[session]** -- a key agreed with the peer over ECDH during the handshake. Protects
+ *  * **[session]** -- a key agreed with the peer during the handshake, by RSA key transport.
+     *   Protects
  *    the bytes on the wire, where the adversary is whoever is listening on the radio.
  *
  * The original code used [crypto] for both. That made a phone perfectly able to read its own
@@ -112,6 +115,33 @@ class MessageRepository(
      * which is safe only because of that pairing.
      */
     @Volatile private var session: SessionCrypto? = null
+
+    /**
+     * This side's random contribution to the session key, for the link currently attached.
+     *
+     * Held for the life of the link because the handshake needs it twice: once to wrap it to
+     * the peer's public key, and once to combine it with the peer's contribution when that
+     * arrives. Wiped whenever the link is replaced or dropped -- see [clearHandshake].
+     *
+     * @Volatile because [tryAgree] reads it from the frame handler and [attach] clears it.
+     */
+    @Volatile private var ourContribution: ByteArray? = null
+
+    /** The peer's public key, from its hello. Null until a usable hello has been decoded. */
+    @Volatile private var peerPublicKeyHex: String? = null
+
+    /** The peer's contribution, unwrapped from its secret frame. Null until one is received. */
+    @Volatile private var theirContribution: ByteArray? = null
+
+    /**
+     * Whether this side has already sent its wrapped contribution on this link.
+     *
+     * A hello arrives once per link, but nothing stops a peer sending a second. Without this
+     * flag a second hello would wrap and send a second contribution, and the two sides would
+     * then disagree about which of them counted -- an intermittent "works until the peer
+     * re-identifies" failure, which is the hardest kind to attribute.
+     */
+    @Volatile private var contributionSent: Boolean = false
 
     /**
      * The agreed key for [conversationId], or null if there is none.
@@ -229,16 +259,36 @@ class MessageRepository(
             link?.close()
             reassembler = Reassembler()
             link = newLink
-            _peerDeviceId.value = null
-            // Cleared with the peer id, and for the same reason: the agreed key belongs to the
-            // peer that announced it, and a new link is an unidentified peer until its hello
-            // arrives. Keeping it would mean sending to the old peer under the new peer's key.
-            session = null
+            // Every one of these belongs to the peer that announced it, and a new link is a new
+            // unidentified peer until its hello arrives. Keeping any of them would mean deriving
+            // this link's key from the previous peer's material.
+            clearHandshake()
         }
 
         startReceiving(newLink)
         announceSelf(newLink)
         requestPump()
+    }
+
+    /**
+     * Drop everything the handshake accumulated, wiping the bytes that are key material.
+     *
+     * Called from [attach] and [detach] under [linkMutex], so it is not synchronised itself.
+     *
+     * The wipe is the point of the method rather than a nicety. [ourContribution] and
+     * [theirContribution] are the two halves of the session key input; leaving them on a `ByteArray`
+     * that the collector will deal with eventually is the "do not keep the secret" instruction
+     * that was not actually followed.
+     */
+    private fun clearHandshake() {
+        _peerDeviceId.value = null
+        session = null
+        peerPublicKeyHex = null
+        contributionSent = false
+        ourContribution?.fill(0)
+        ourContribution = null
+        theirContribution?.fill(0)
+        theirContribution = null
     }
 
     /**
@@ -249,6 +299,10 @@ class MessageRepository(
      * *and* our public key, so a message arriving before our hello would be a message the peer
      * cannot decrypt -- one the user sent and neither phone can ever read.
      *
+     * This is frame one of four. Frame two, the wrapped contribution, is sent by
+     * [sendContribution] once the peer's hello has arrived -- it cannot be sent sooner,
+     * because it is encrypted to the peer's key.
+     *
      * A refused write is logged and otherwise ignored. The peer may already know our id from
      * an earlier session, in which case this frame is redundant, and there is nothing to
      * recover here: [requestPump] runs again on the next cycle.
@@ -256,7 +310,7 @@ class MessageRepository(
     private suspend fun announceSelf(link: ByteLink) {
         val frame = withContext(Dispatchers.IO) {
             // On Dispatchers.IO because both of these are blocking Keystore calls and this
-            // runs on the view model's Main dispatcher. Creating an EC key pair can take
+            // runs on the view model's Main dispatcher. Creating an RSA key pair can take
             // hundreds of milliseconds on a phone whose keystore is backed by a TEE, which on
             // the main thread is an ANR the user sees as the app hanging on tap.
             val publicKey = if (identityKeys.ensureKeyPair()) identityKeys.publicKeyHex() else null
@@ -283,6 +337,49 @@ class MessageRepository(
         }
     }
 
+    /**
+     * Send this side's contribution, wrapped to the peer's public key.
+     *
+     * Called when the peer's hello arrives, which is the earliest moment a contribution can
+     * exist. Sent at most once per link; see [contributionSent].
+     *
+     * The contribution is generated here rather than at attach because a link that never
+     * completes a handshake should not leave key material lying around, and because generating
+     * it needs the Keystore, which is not free.
+     */
+    private suspend fun sendContribution(link: ByteLink, peerPublicKeyHex: String) {
+        if (contributionSent) return
+
+        val frame = withContext(Dispatchers.IO) {
+            if (!identityKeys.ensureKeyPair()) return@withContext null
+            val contribution = identityKeys.newContribution() ?: return@withContext null
+            val wrapped = identityKeys.wrap(contribution, peerPublicKeyHex)
+            if (wrapped == null) {
+                contribution.fill(0)
+                return@withContext null
+            }
+            val encoded = runCatching { Reassembler.frame(PeerSecret.encode(identity.id, wrapped)) }
+                .getOrNull()
+            // The ciphertext is not secret -- it is public by construction, and the peer needs
+            // it -- but there is no reason to keep a second copy of it after the write.
+            wrapped.fill(0)
+            // Published only once the frame is ready to send, so a peer that sends its hello
+            // twice cannot make this side send two different contributions.
+            ourContribution = contribution
+            encoded
+        }
+
+        if (frame == null) {
+            Log.w(TAG, "could not wrap a contribution for the peer")
+            return
+        }
+
+        contributionSent = true
+        if (!link.send(frame)) {
+            Log.w(TAG, "could not send our contribution on the link")
+        }
+    }
+
     /** Detach and stop all link activity. Safe when nothing is attached. */
     suspend fun detach() {
         val old = linkMutex.withLock {
@@ -291,8 +388,9 @@ class MessageRepository(
             current
         }
         old?.close()
-        _peerDeviceId.value = null
-        session = null
+        // Outside the lock deliberately: the handshake fields are all @Volatile and this does
+        // not need to be atomic with the link swap, only ordered after it.
+        clearHandshake()
         receiveJob?.cancel()
         receiveJob = null
         pumpJob?.cancel()
@@ -343,8 +441,11 @@ class MessageRepository(
      *
      * ## Agreeing the key is the part that used to be missing
      *
-     * Recording the peer's id is not enough to read its messages. This now also runs ECDH
-     * against the public key the hello carried and installs the resulting [SessionCrypto].
+     * Recording the peer's id is not enough to read its messages, and that was the entire
+     * defect: the app had no shared secret with anyone, so every message arrived unreadable.
+     * The hello now also carries the peer's public key, and this answers it with our
+     * contribution wrapped to that key. See [IdentityKey] for why that transport is RSA and not
+     * ECDH -- it is a measurement about two specific handsets, not a preference.
      *
      * When agreement fails, the peer is deliberately left unidentified: [_peerDeviceId] stays
      * null so the UI reports an identification failure. Publishing the id anyway would open a
@@ -352,7 +453,7 @@ class MessageRepository(
      * application that looks like it is working while being incapable of sending. A visible
      * failure is the honest outcome.
      */
-    private fun handleHello(frame: ByteArray) {
+    private suspend fun handleHello(frame: ByteArray) {
         val announced = PeerHello.decode(frame)
         if (announced == null) {
             Log.w(TAG, "ignored handshake with an unusable device id or public key")
@@ -366,35 +467,135 @@ class MessageRepository(
             peers.remember(address, announced.deviceId)
         }
 
-        val conversationId = ConversationId.of(identity.id, announced.deviceId).value
-        val agreed = identityKeys.agree(announced.publicKeyHex, conversationId)
-        if (agreed == null) {
-            Log.w(TAG, "could not agree a key with ${announced.deviceId}")
-            session = null
-            _peerDeviceId.value = null
+        peerPublicKeyHex = announced.publicKeyHex
+        _peerDeviceId.value = announced.deviceId
+
+        // Now that the peer's key is known, our contribution can be encrypted to it. This is
+        // the earliest a contribution can exist, which is why the handshake needs a second
+        // frame rather than one larger one.
+        link?.let { sendContribution(it, announced.publicKeyHex) }
+
+        // The peer's contribution may already be here, if its secret frame somehow preceded
+        // its hello. Checking costs one null comparison and removes the assumption.
+        tryAgree()
+    }
+
+    /**
+     * Handle a wrapped-contribution frame: unwrap it and, if the handshake is otherwise
+     * complete, install the session key.
+     *
+     * ## Why the id in this frame is checked against the peer
+     *
+     * [PeerSecret.Contribution] names the device that wrapped it, and that name is not
+     * decoration. A contribution from a device that is not this link's peer would be mixed into
+     * the key material for a conversation it has nothing to do with, producing a key neither
+     * phone holds -- and the symptom would be a message that neither end can read. Refusing is
+     * cheap; attributing that later is not.
+     */
+    private fun handleSecret(frame: ByteArray) {
+        val received = PeerSecret.decode(frame)
+        if (received == null) {
+            Log.w(TAG, "ignored a contribution frame that did not decode")
             return
         }
 
-        session = SessionCrypto(agreed)
-        _peerDeviceId.value = announced.deviceId
+        val peer = _peerDeviceId.value
+        if (peer == null) {
+            // The contribution overtook its own hello, which an ordered link does not do. Rather
+            // than buffer one frame's worth of state for a case that cannot arise, the peer is
+            // left unidentified until its hello shows up.
+            Log.w(TAG, "contribution from ${received.deviceId} arrived before its identification")
+            return
+        }
+        if (received.deviceId != peer) {
+            Log.w(TAG, "refused a contribution from ${received.deviceId} on a link to $peer")
+            return
+        }
 
-        // Logged on purpose. The defect this change fixes was silent: two devices derived two
-        // different keys, nothing complained, and the only symptom was a message rendering as
-        // "Could not read that message". A one-way fingerprint means the agreement can be
-        // confirmed from two logcats without sending a message, and without logging anything a
-        // reader could use. Two phones reporting the same value here is the evidence that the
-        // keys match.
+        val wrapped = Hex.decode(received.wrappedHex)
+        if (wrapped == null) {
+            Log.w(TAG, "contribution from ${received.deviceId} was not valid hex")
+            return
+        }
+
+        theirContribution?.fill(0)
+        // unwrap wipes its argument on every path, so there is no copy of the ciphertext left
+        // behind whether this succeeds or not.
+        theirContribution = identityKeys.unwrap(wrapped)
+
+        tryAgree()
+    }
+
+    /**
+     * Derive and install the session key, if both contributions are in hand.
+     *
+     * Called from both halves of the handshake because either can arrive first: a hello with no
+     * contribution yet, then a contribution, or the other way round if the peer dials faster than
+     * this side answers. Returning early on a missing half is the whole reason this is a
+     * separate function rather than the tail of [handleSecret].
+     *
+     * Every failure ends the same way -- no session, no peer, one log line. Splitting them in
+     * the UI would offer a user a difference between "the other phone cannot do this" and
+     * "something went wrong on the radio" that they cannot act on differently.
+     */
+    private fun tryAgree() {
+        val peer = _peerDeviceId.value ?: return
+        val ours = ourContribution ?: return
+        val theirs = theirContribution ?: return
+
+        val conversationId = ConversationId.of(identity.id, peer).value
+        val combined = SessionKeys.combine(identity.id, ours, peer, theirs)
+        if (combined == null) {
+            Log.w(TAG, "could not combine contributions with $peer")
+            failHandshake()
+            return
+        }
+
+        val key = SessionKeys.derive(combined, conversationId)
+        if (key == null) {
+            Log.w(TAG, "could not derive a key for conversation $conversationId")
+            failHandshake()
+            return
+        }
+
+        session = SessionCrypto(key)
+
+        // Logged on purpose. The defect this whole area exists to fix was silent: two devices
+        // derived two different keys, nothing complained, and the only symptom was a message
+        // rendering as "Could not read that message". A one-way fingerprint means the agreement
+        // can be confirmed from two logcats without sending a message, and without logging
+        // anything a reader could use. Two phones reporting the same value here is the evidence
+        // that the keys match.
         Log.i(
             TAG,
             "agreed key for conversation $conversationId " +
-                "with ${announced.deviceId}, fingerprint " +
-                (SessionKeys.fingerprint(agreed) ?: "unavailable"),
+                "with $peer, fingerprint " +
+                (SessionKeys.fingerprint(key) ?: "unavailable"),
         )
 
-        // The handshake is what makes queued messages sendable, so a newly keyed peer is
-        // itself a reason to run the pump. Without this a message composed while the peer was
-        // still identifying would sit in the queue until the next retry cycle noticed.
+        // The handshake is what makes queued messages sendable, so a newly keyed peer is itself
+        // a reason to run the pump. Without this a message composed while the peer was still
+        // identifying would sit in the queue until the next retry cycle noticed.
         requestPump()
+    }
+
+    /**
+     * Abandon the handshake, keeping the link.
+     *
+     * Contributions are wiped rather than merely dropped: a half-finished key input is key
+     * material with no further use on this link. [contributionSent] is left alone on purpose --
+     * this side has already put a contribution on the wire and the peer may be combining it as
+     * this runs, so the retry comes from a new link rather than from re-sending on this one,
+     * which would leave the two sides holding different contributions again.
+     */
+    private fun failHandshake() {
+        session = null
+        _peerDeviceId.value = null
+        peerPublicKeyHex = null
+        ourContribution?.fill(0)
+        ourContribution = null
+        theirContribution?.fill(0)
+        theirContribution = null
     }
 
     /**
@@ -403,13 +604,18 @@ class MessageRepository(
      * Split out from the collect loop so it can be tested directly against hostile input.
      */
     private suspend fun acceptFrame(frame: ByteArray) {
-        // The handshake is checked first, before any envelope decode, because it is the only
-        // frame that is not a message and it must never reach the message path -- an
+        // The handshake frames are checked first, before any envelope decode, because they are
+        // the only frames that are not messages and they must never reach the message path -- an
         // unencrypted frame written to the database would defeat the storage-at-rest claim.
-        // `PeerHello.isHello` keys on a byte the envelope magic cannot produce, so this
-        // cannot shadow a real message.
+        // `PeerHello.isHello` and `PeerSecret.isSecret` key on bytes the envelope magic cannot
+        // produce, so neither can shadow a real message.
         if (PeerHello.isHello(frame)) {
             handleHello(frame)
+            return
+        }
+
+        if (PeerSecret.isSecret(frame)) {
+            handleSecret(frame)
             return
         }
 

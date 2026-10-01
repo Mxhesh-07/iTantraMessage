@@ -4,6 +4,7 @@ import `in`.isro.sih26173.itantramessage.data.crypto.IdentityKey
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -38,13 +39,21 @@ class PeerHelloTest {
     private val valid = "IT-1A2B3C"
 
     /**
-     * A stand-in public key: 92 hex characters of well-formed hex.
+     * A stand-in public key: 588 hex characters, which is the length of a real 2048-bit RSA
+     * `SubjectPublicKeyInfo`.
      *
-     * Not a real point. Decoding a real P-256 key needs a `KeyFactory`, which belongs to
-     * `IdentityKey` and to the hardware run. What matters here is that the parser accepts and
-     * refuses the *shape*, and this is a shape the parser cannot distinguish from a real key.
+     * Not a real key. Decoding one needs a `KeyFactory`, which belongs to `IdentityKey` and to
+     * the hardware run. What matters here is that the parser accepts and refuses the *shape*,
+     * and this is a shape the parser cannot distinguish from a real key.
+     *
+     * Sized to the real thing on purpose. The earlier fixture was 46 bytes, left over from the
+     * EC design, which is short enough that it would have kept passing against a cap that had
+     * been widened by three times for the RSA change -- a test that cannot fail is not a test.
      */
-    private val key = "ab".repeat(46)
+    private val key = "ab".repeat(294)
+
+    /** Bytes in a 2048-bit RSA SPKI, hex-encoded. */
+    private fun hexOfBytes(count: Int) = "cd".repeat(count)
 
     // ---- the collision property, asserted rather than asserted-in-a-comment --------------
 
@@ -226,16 +235,43 @@ class PeerHelloTest {
     /**
      * The parser and the agreement step must agree about the cap.
      *
-     * `MAX_PUBLIC_KEY_BYTES` is a compile-time constant, so this compares values rather than
-     * loading the Keystore-backed class. If the two ever diverge, one of them is rejecting
-     * something the other accepted, and the handshake fails for no visible reason.
+     * This is now a compile-time tautology -- `PeerHello.MAX_PUBLIC_KEY_BYTES` is *declared* as
+     * `IdentityKey.MAX_PUBLIC_KEY_BYTES` -- so comparing the two values would prove nothing.
+     * What replaced it asserts the cap against real key sizes instead, which is the property
+     * that actually matters: the app's own 2048-bit key has to fit, and a key one byte too long
+     * has to be refused.
      */
     @Test
-    fun `the key cap matches the one the agreement step enforces`() {
-        assertEquals(
-            "PeerHello and IdentityKey must agree on the largest acceptable public key",
-            IdentityKey.MAX_PUBLIC_KEY_BYTES,
-            PeerHello.MAX_PUBLIC_KEY_BYTES,
+    fun `the key cap admits a real 2048 bit RSA key`() {
+        // 2048-bit RSA SPKI is 294 bytes. If the cap were below this the app would refuse its
+        // own peer's key on every connection.
+        assertEquals(294, key.length / 2)
+        assertTrue(
+            "the parser must accept the key size the app itself sends",
+            PeerHello.isValidPublicKey(key),
+        )
+        assertNotNull(
+            PeerHello.decode(
+                ("HELLO:" + valid + ":" + key).toByteArray(Charsets.UTF_8),
+            ),
+        )
+    }
+
+    /** A 4096-bit RSA SPKI is 550 bytes, inside the cap. Fails if the headroom is removed. */
+    @Test
+    fun `the key cap admits a 4096 bit RSA key`() {
+        assertTrue(PeerHello.isValidPublicKey(hexOfBytes(550)))
+    }
+
+    /** One byte past the cap, refused in both the shape check and a real decode. */
+    @Test
+    fun `the key cap refuses one byte over the maximum`() {
+        assertFalse(PeerHello.isValidPublicKey(hexOfBytes(IdentityKey.MAX_PUBLIC_KEY_BYTES + 1)))
+        assertNull(
+            PeerHello.decode(
+                ("HELLO:" + valid + ":" + hexOfBytes(IdentityKey.MAX_PUBLIC_KEY_BYTES + 1))
+                    .toByteArray(Charsets.UTF_8),
+            ),
         )
     }
 
