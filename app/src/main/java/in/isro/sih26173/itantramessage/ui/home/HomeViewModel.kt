@@ -99,6 +99,17 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
     /** The scan job, held so a second Search press cancels rather than doubles up. */
     private var scanJob: Job? = null
 
+    /**
+     * The identification deadline, cancelled the moment the peer identifies itself.
+     *
+     * Held rather than fired-and-forgotten, because an uncancelled deadline will cheerfully
+     * overwrite the state with a failure message ten seconds *after* a connection that
+     * worked. Found on hardware: the chat opened correctly, the user pressed back to Home,
+     * and found "That device did not identify itself" describing a failure that never
+     * happened. A timeout that cannot be cancelled is a lie waiting for a slow success.
+     */
+    private var identifyJob: Job? = null
+
     init {
         // Reflect the real blocker at construction rather than waiting for the first
         // action. A user whose Bluetooth is off should see that on arrival, not after
@@ -350,7 +361,8 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
                                 message = "Identifying ${device.displayName}...",
                             )
                         }
-                        viewModelScope.launch {
+                        identifyJob?.cancel()
+                        identifyJob = viewModelScope.launch {
                             delay(IDENTIFY_TIMEOUT_MS)
                             abandonIdentification()
                         }
@@ -376,6 +388,10 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
      * sorts them -- so it does not matter which side calls this.
      */
     private fun openConversationWith(peerDeviceId: String) {
+        // The deadline has done its job. Cancelling it here is what stops it later reporting
+        // a failure for the connection it was watching succeed.
+        identifyJob?.cancel()
+        identifyJob = null
         _state.update {
             it.copy(
                 isConnecting = false,
@@ -399,6 +415,11 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
      * was force-stopped mid-session.
      */
     private fun abandonIdentification() {
+        identifyJob = null
+        // Never overwrite a conversation that already opened: if the peer identified after
+        // the deadline elapsed but before this state update landed, the user is in a working
+        // chat and this would throw them back out with an error.
+        if (_state.value.openConversation != null) return
         _state.update {
             it.copy(
                 isConnecting = false,

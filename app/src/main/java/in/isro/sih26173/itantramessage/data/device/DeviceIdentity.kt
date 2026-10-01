@@ -109,7 +109,24 @@ class DeviceIdentity(context: Context) {
         val random = java.security.SecureRandom()
         var value: Int
         do {
-            value = random.nextInt(1, 0x1000000)
+            // `1 + random.nextInt(0x1000000)`, NOT `random.nextInt(1, 0x1000000)`.
+            //
+            // The two-argument `Random.nextInt(origin, bound)` is a Java 17 method, present
+            // from Android API 34. This project sets `minSdk = 24` and does not enable core
+            // library desugaring, so the ranged form compiles happily and then dies at
+            // runtime on every older device with
+            //
+            //     java.lang.NoSuchMethodError: No virtual method nextInt(II)I
+            //       in class Ljava/security/SecureRandom
+            //
+            // Found by running the release build on an Android 11 handset (API 30): the
+            // process died the moment a user tapped a peer, because that is the first thing
+            // that touches `identity.id`. An API 35 phone in the same test never hit it,
+            // which is exactly why a single modern device cannot validate `minSdk`.
+            //
+            // The single-argument `nextInt(bound)` is API 1 and has always worked. The
+            // offset is added here rather than passed in, which is the whole fix.
+            value = 1 + random.nextInt(0x1000000)
             // 0x000000 and 0xFFFFFF are avoided so the formatted id never reads as a
             // placeholder or an all-ones sentinel.
         } while (value == 1 || value == 0xFFFFFF)

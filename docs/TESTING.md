@@ -217,6 +217,46 @@ A unit test with an injected `SecretKey` would cover the envelope format, genera
 most of the file, and it is straightforward. It is not written, and this is the honest state
 rather than a claim that the code is simple enough not to need it.
 
+### 5.3 A crash that only an *old* phone could find
+
+The most serious defect in this document, and the clearest argument for testing across a
+range of Android versions rather than on the newest device available.
+
+`DeviceIdentity.randomId()` read:
+
+```kotlin
+value = random.nextInt(1, 0x1000000)
+```
+
+`java.util.Random.nextInt(origin, bound)` is a **Java 17** method, present from **Android API
+34**. The project sets `minSdk = 24` and does not enable core library desugaring, so the call
+compiled without complaint and then killed the process at runtime on every device below
+Android 14:
+
+```
+java.lang.NoSuchMethodError: No virtual method nextInt(II)I in class Ljava/security/SecureRandom
+```
+
+`FATAL EXCEPTION: main`, unrecoverable, reproducible on every tap that touched a peer.
+
+**Why every automated gate passed.** The build succeeded, the 74 unit tests passed, both script
+gates exited 0, and `aapt` confirmed the APK declared no `INTERNET`. All of that is true and
+all of it is irrelevant: nothing in this repository executes the code path. Lint does not check
+for API-level method availability on a JDK method reached through `java.util.Random`, and no
+test constructs a `DeviceIdentity`, which needs a `Context`.
+
+**Why the two-phone run found it.** The test phones were an **API 35** Galaxy A14 and an
+**API 30** realme Narzo 10A. The A14 worked perfectly and would have done so forever. The
+API 30 phone crashed on the first tap. One modern device validates nothing about `minSdk 24`;
+the claim is a statement about devices that were never in the room.
+
+Fixed to `1 + random.nextInt(0x1000000)` -- the single-argument `nextInt(bound)` is API 1. The
+offset moved into the addition rather than into a method call that did not exist yet.
+
+The general lesson: **`minSdk` is a promise about devices you are not holding.** Verifying it
+means testing on the oldest supported version, or enabling core library desugaring and being
+explicit that the range is a compatibility shim rather than real platform support.
+
 ### 5.2 A defect that only two phones could find
 
 Also found by running the release build on two handsets, and this one is the more serious of
