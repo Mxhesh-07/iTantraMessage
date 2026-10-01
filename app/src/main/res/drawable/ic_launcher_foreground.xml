@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Launcher icon, foreground layer.
+
+  Drawn as a vector rather than shipped as PNGs at five densities. The mark is a radio
+  arc pair around a dot: "a message going out to someone nearby". The 108dp canvas is the
+  adaptive-icon standard, and the artwork is inset inside the inner 72dp safe zone so
+  no launcher mask can clip it. The outer 18dp on each side is the bleed area that a
+  circular mask will cut away.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- Inner arc -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M54,38 A16,16 0 0 1 70,54"
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="6"
+        android:strokeLineCap="round" />
+
+    <!-- Outer arc -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M54,26 A28,28 0 0 1 82,54"
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="6"
+        android:strokeLineCap="round" />
+
+    <!-- Message dot -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M54,54 m-9,0 a9,9 0 1,0 18,0 a9,9 0 1,0 -18,0" />
+</vector>

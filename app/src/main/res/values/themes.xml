@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      A minimal theme. iTantra Message draws everything with Compose, so this exists only
+      so the window has sane defaults before the first frame: no action bar, and a
+      background that matches the Compose surface so launch does not flash white on a
+      dark-mode device.
+
+      The parent is android:Theme.Material.Light.NoActionBar rather than an AppCompat
+      theme, because AppCompat is not a dependency (see app/build.gradle.kts).
+    -->
+    <style name="Theme.ItantraMessage" parent="@android:style/Theme.Material.Light.NoActionBar">
+        <item name="android:statusBarColor">@color/brand_primary</item>
+        <item name="android:windowBackground">@color/surface</item>
+    </style>
+</resources>

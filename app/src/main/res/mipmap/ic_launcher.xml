@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Launcher icon for API 24-25, which predate adaptive icons.
+
+  The system draws a legacy icon exactly as given, with no mask, so a square icon would
+  look square. This layer-list is the pre-26 equivalent of the adaptive icon: a rounded
+  indigo plate with the same mark on it, inset so the artwork keeps its intended padding.
+-->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item>
+        <shape android:shape="rectangle">
+            <corners android:radius="12dp" />
+            <solid android:color="@color/brand_primary" />
+        </shape>
+    </item>
+    <item
+        android:drawable="@drawable/ic_launcher_foreground"
+        android:gravity="fill"
+        android:left="12dp"
+        android:top="12dp"
+        android:right="12dp"
+        android:bottom="12dp" />
+</layer-list>

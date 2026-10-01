@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Backup rules for API < 31, where android:dataExtractionRules is ignored and
+  android:fullBackupContent is the mechanism that applies.
+
+  Same reasoning as xml/data_extraction_rules.xml: nothing from this app's storage is
+  worth moving to another device. The message database is encrypted with a key that
+  cannot leave the original device's Keystore, so a restored copy would be unreadable
+  ciphertext; the device identity must NOT be restored, because two installs sharing an
+  ID would collide in the peer protocol and messages would be attributed to the wrong
+  handset.
+-->
+<full-backup-content>
+    <exclude domain="database" path="." />
+    <exclude domain="sharedpref" path="." />
+    <exclude domain="file" path="." />
+</full-backup-content>

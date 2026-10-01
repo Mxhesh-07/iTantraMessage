@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      Material 3 tonal palette, generated from a single indigo source colour.
+
+      Only the roles this app actually paints are defined. A full M3 baseline has 40+
+      colour roles; the extras would be unused, and an unused resource is a thing a
+      reviewer has to verify is unused.
+
+      Measured contrast ratios (WCAG 2.x relative luminance), computed from these exact
+      hex values rather than quoted from a palette generator:
+
+        on_surface            on surface             16.62:1  AAA
+        on_primary            on primary              8.57:1  AAA
+        on_surface_variant    on surface              9.08:1  AAA
+        on_primary_container  on primary_container   13.33:1  AAA
+        on_error              on error                6.46:1  AA
+
+      AA needs 4.5:1 for body text, AAA needs 7:1. Every body-text pairing here clears AAA
+      except the error pair, which clears AA with margin. docs/COLOR.md records the
+      computation so it can be re-run after any change.
+    -->
+
+    <color name="brand_primary">#1A4C8B</color>
+    <color name="on_primary">#FFFFFF</color>
+    <color name="primary_container">#D6E3FF</color>
+    <color name="on_primary_container">#001B3C</color>
+
+    <color name="surface">#FDFBFF</color>
+    <color name="on_surface">#1A1C1E</color>
+    <color name="surface_variant">#E0E2EC</color>
+    <color name="on_surface_variant">#43474E</color>
+
+    <color name="error">#BA1A1A</color>
+    <color name="on_error">#FFFFFF</color>
+
+    <!--
+      Status colours for the delivery chips. These are the only place colour is used to
+      carry meaning in the app, so they are chosen to be distinguishable from each other
+      AND from the surface. The chips always carry a text label too, so the state
+      never depends on colour alone. That is an accessibility requirement, not a style
+      preference: roughly 1 in 12 men has a red-green colour vision deficiency.
+    -->
+    <color name="status_pending">#6B5E00</color>
+    <color name="status_sent">#1A4C8B</color>
+    <color name="status_delivered">#1E5B2E</color>
+    <color name="status_failed">#BA1A1A</color>
+</resources>

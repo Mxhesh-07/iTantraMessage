@@ -1,0 +1,31 @@
+# Build outputs
+build/
+.gradle/
+*.apk
+*.aab
+*.ap_
+*.dex
+*.class
+
+# Local configuration -- machine-specific, must never be committed
+local.properties
+*.keystore
+*.jks
+key.properties
+
+# IDE
+.idea/
+*.iml
+*.ipr
+*.iws
+.DS_Store
+
+# Captured evidence and logs
+# Artifacts are not in version control: they are large, they are reproducible from a
+# documented command, and committing them makes a diff impossible to read. The docs
+# reference them by the command that produced them, not by a checked-in file.
+/artifacts/
+*.log
+
+# Gradle
+!gradle/wrapper/gradle-wrapper.jar

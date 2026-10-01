@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+    <background android:drawable="@color/brand_primary" />
+    <foreground android:drawable="@drawable/ic_launcher_foreground" />
+    <!--
+      Monochrome layer for themed icons (Android 13+). Same artwork, tinted by the system
+      from its alpha, which is why the mark is pure white with no internal colour: a
+      non-monochrome foreground would be forced to a flat tint and lose the arcs.
+    -->
+    <monochrome android:drawable="@drawable/ic_launcher_foreground" />
+</adaptive-icon>

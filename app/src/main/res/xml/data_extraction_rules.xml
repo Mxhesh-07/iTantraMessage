@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Auto Backup is disabled for the app as a whole (android:allowBackup="false" in the
+  manifest), so these rules exist to make the intent explicit and to keep the encrypted
+  message database and the device identity OUT of any cloud backup.
+
+  Why it matters: a Room database of messages encrypted under a Keystore key is
+  useless to an attacker who copies the file, because the key never leaves the
+  Keystore. But if the file were backed up to a cloud account, the ciphertext would sit
+  in someone else's data centre indefinitely, and the moment that device syncs to a new
+  phone the messages become readable on hardware the user did not choose. The Keystore
+  guarantee is per-device; backups break that guarantee by moving data off the device.
+-->
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="database" />
+        <exclude domain="sharedpref" />
+        <exclude domain="file" />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="database" />
+        <exclude domain="sharedpref" />
+        <exclude domain="file" />
+    </device-transfer>
+</data-extraction-rules>

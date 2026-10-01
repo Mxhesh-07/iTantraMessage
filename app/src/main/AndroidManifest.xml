@@ -1,0 +1,108 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  iTantra Message: offline peer-to-peer messaging.
+
+  THE ONE PERMISSION RULE IN THIS FILE
+  ================================
+  android.permission.INTERNET MUST NOT APPEAR HERE, in any <uses-permission>, in any
+  <uses-feature>, or via any library that merges it in. That is not a style preference: on
+  Android, a process without INTERNET is refused socket creation by the kernel, so the
+  app cannot open a TCP/UDP connection even if code asked it to. It is a guarantee enforced
+  below the app, not a promise made by it.
+
+  scripts/check_offline.sh reads the built APK with aapt and fails the build if the string
+  "android.permission.INTERNET" appears in the merged manifest. The debug manifest
+  (src/debug/AndroidManifest.xml) declares it, because the Dart/Compose debug tooling needs
+  a socket to the host, and that is exactly why the check runs against the RELEASE apk,
+  where the debug manifest is not merged.
+
+  There is no Google Play services dependency, and that is a consequence of the rule above
+  rather than a separate preference: play-services-nearby is unusable on de-Googled
+  hardware and drags in the Play services socket stack. The radio is driven directly
+  through android.bluetooth.*, which is in the platform since API 5 and needs no library.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!--
+      Bluetooth, in two eras of the permission model. Both sets are declared because
+      minSdk is 24 (Android 7.0) and the app must run on API 24 through current.
+
+      API < 31: BLUETOOTH / BLUETOOTH_ADMIN are install-time permissions, and the
+      maxSdkVersion cap keeps them off modern devices where they no longer exist as
+      grantable runtime permissions and would only confuse the permission UI.
+    -->
+    <uses-permission android:name="android.permission.BLUETOOTH"
+        android:maxSdkVersion="30" />
+    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN"
+        android:maxSdkVersion="30" />
+
+    <!--
+      API >= 31: the three split Bluetooth permissions. SCAN and CONNECT are runtime
+      permissions and are the ones the permission flow in PermissionGate.kt actually
+      requests. ADVERTISE is only needed for the BLE GATT transport; the RFCOMM
+      transport does not use it, so it is declared but the UI explains it is unused on
+      the Classic path.
+    -->
+    <uses-permission android:name="android.permission.BLUETOOTH_SCAN" />
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+    <uses-permission android:name="android.permission.BLUETOOTH_ADVERTISE" />
+
+    <!--
+      Location. On API < 31 a BLE scan result is only returned to an app holding a
+      location permission. This is a platform policy about deriving physical location
+      from radio observations, not something the app asks location for. It is therefore
+      capped at API 30: from 31 up, BLUETOOTH_SCAN replaces it, and asking again would
+      show a second, redundant location prompt to the user.
+    -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"
+        android:maxSdkVersion="30" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION"
+        android:maxSdkVersion="30" />
+
+    <!--
+      API >= 33: NEARBY_WIFI_DEVICES is required to enumerate Wi-Fi peer-to-peer peers on
+      the WiFiDirect transport. Capped at 32 because the transport is not selected on
+      API < 33 yet, and declaring a permission the code cannot yet exercise is how apps
+      end up requesting things they do not need.
+    -->
+    <uses-permission android:name="android.permission.NEARBY_WIFI_DEVICES"
+        android:maxSdkVersion="32" />
+
+    <!--
+      Bluetooth hardware is required, not merely used. required="true" means the app is
+      filtered out of the Play Store for devices with no radio, instead of being
+      installed and then failing every scan. The app cannot fulfil its purpose without it.
+    -->
+    <uses-feature android:name="android.hardware.bluetooth" android:required="true" />
+    <uses-feature android:name="android.hardware.bluetooth_le" android:required="false" />
+
+    <application
+        android:name=".ItantraMessageApp"
+        android:allowBackup="false"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:fullBackupContent="@xml/backup_rules"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:roundIcon="@mipmap/ic_launcher"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.ItantraMessage"
+        tools:targetApi="31">
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:label="@string/app_name"
+            android:launchMode="singleTask"
+            android:screenOrientation="portrait"
+            android:theme="@style/Theme.ItantraMessage"
+            android:windowSoftInputMode="adjustResize"
+            tools:ignore="DiscouragedApi,LockedOrientationActivity">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+
+</manifest>
