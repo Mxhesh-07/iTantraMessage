@@ -1,0 +1,54 @@
+# Line endings
+#
+# Kotlin, Gradle, YAML and shell sources are stored with LF and checked out with CRLF on
+# Windows, so a build script edited on either platform produces the same blob and the
+# no-INTERNET gate cannot be defeated by a line-ending change to a manifest.
+* text=auto eol=crlf
+
+*.kt        text eol=crlf
+*.kts       text eol=crlf
+*.java      text eol=crlf
+*.xml       text eol=crlf
+*.yml       text eol=crlf
+*.yaml      text eol=crlf
+*.sh        text eol=crlf
+*.md        text eol=crlf
+*.py        text eol=crlf
+*.txt       text eol=crlf
+*.pro       text eol=crlf
+*.properties text eol=crlf
+
+# Binary artifacts. Marked explicitly rather than left to Git's extension guessing.
+#
+# These must never be run through a text filter. A .docx and a .wav are ZIP and RIFF
+# containers whose integrity depends on exact bytes; normalising line endings inside one
+# produces a file that still looks like a ZIP and is no longer readable by Word or by
+# anything else. `text=auto` alone is not enough, because it inspects content and a
+# binary blob can contain byte sequences that look like text.
+*.docx      binary
+*.onnx      binary
+*.wav       binary
+*.apk       binary
+*.jar       binary
+*.aar       binary
+*.keystore  binary
+
+# The speech model, via Git LFS.
+#
+# WHY LFS
+# -------
+# `base-decoder.int8.onnx` is 130,672,026 bytes. GitHub rejects any blob over 100 MiB, so
+# committing it directly makes the push fail outright -- this is a hard limit, not a warning
+# that can be accepted. Git LFS stores the content out of line and leaves a small pointer in
+# the commit, which keeps the working tree identical (Gradle reads the same files either way)
+# while making the repository cloneable.
+#
+# The alternative -- not committing the model at all -- was considered and rejected: it makes
+# a fresh clone unable to build an app that can actually dictate, which is the one thing this
+# project is about. The cost is that cloning now requires git-lfs, which `BUILD.md` states.
+#
+# `base-tokens.txt` and the test .wav are deliberately NOT tracked through LFS. At 817 KB and
+# 352 KB they belong in ordinary git history, where they can be read, diffed and reviewed
+# without an LFS client, and the tokens file is small enough that a reviewer can verify its
+# integrity by eye against the SHA-256 in the models README.
+*.onnx filter=lfs diff=lfs merge=lfs -text
