@@ -52,3 +52,23 @@
 # without an LFS client, and the tokens file is small enough that a reviewer can verify its
 # integrity by eye against the SHA-256 in the models README.
 *.onnx filter=lfs diff=lfs merge=lfs -text
+
+# The tokens file must stay byte-identical to the model it belongs to.
+#
+# DO NOT REMOVE THIS, and do not let a general rule swallow it.
+#
+# The `*.txt text eol=crlf` rule above is correct for prose and catastrophic here. This file has
+# 50,257 lines, so CRLF checkout rewrites it from 816,730 bytes to 866,987 -- one added byte
+# per line. `ModelStore` verifies this file's SHA-256 before it will build a recogniser, so
+# every fresh clone would hash-mismatch, discard the model as corrupt, and silently have no
+# speech engine at all. The failure would not look like a line-ending problem; it would look
+# like the model failing.
+#
+# Caught by cloning the published repository and comparing sizes, which is the only check that
+# would have found it: the file is valid text, so nothing was wrong in the working copy that
+# produced it. `-text` disables all end-of-line conversion, so the blob is checked out exactly
+# as committed.
+app/src/main/assets/models/whisper-base/base-tokens.txt -text
+
+# Belt and braces: nothing under the model directory is text.
+app/src/main/assets/models/** -text

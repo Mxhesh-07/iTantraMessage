@@ -120,6 +120,43 @@ jobs:
             exit 1
           fi
 
+      - name: The model files are byte-exact in the checkout
+        # WHY THIS EXISTS
+        # -------------
+        # `.gitattributes` had a blanket `*.txt text eol=crlf` rule. That is correct for prose
+        # and it silently corrupted `base-tokens.txt`: the file has 50,257 lines, so a CRLF
+        # checkout rewrites it from 816,730 bytes to 866,987. The blob in git was fine, the
+        # file in the author's working copy was fine, and `assembleRelease` succeeded --
+        # so every local check passed while every fresh clone received a tokens file that
+        # `ModelStore` rejects on SHA-256. On a clean clone the app would extract the model,
+        # fail verification, discard it as corrupt, and have no speech engine at all.
+        #
+        # The failure was only found by cloning the published repository and comparing sizes.
+        # This step makes that check routine, and it checks the *checked-out* bytes rather
+        # than the blob, because the blob was never the thing that was wrong.
+        #
+        # The expected values are duplicated from ModelStore.EXPECTED on purpose. If they
+        # diverge, this gate fails and someone reads the diff -- which is the correct outcome
+        # for a model hash that changed without anyone meaning it to.
+        run: |
+          set -eu
+          dir=app/src/main/assets/models/whisper-base
+          check() {
+            actual=$(sha256sum "$dir/$1" | cut -d' ' -f1)
+            actual_size=$(stat -c%s "$dir/$1")
+            if [ "$actual" != "$2" ] || [ "$actual_size" != "$3" ]; then
+              echo "::error::$1 is $actual_size bytes / $actual"
+              echo "::error::expected $3 bytes / $2"
+              echo '::error::A mismatch here means a fresh clone cannot load the model.'
+              echo '::error::Check .gitattributes for an end-of-line rule touching this file.'
+              exit 1
+            fi
+            echo "$1 ok ($actual_size bytes)"
+          }
+          check base-tokens.txt   b34b360dbb493e781e479794586d661700670d65564001f23024971d1f2fa126 816730
+          check base-encoder.int8.onnx 0b8fb1304b6109976038efff5ace81720e00386f3ff6b54ee8c75291ca0a1e11 29120534
+          check base-decoder.int8.onnx 9759d217388a01b3a4c7c15533201067b48ae819c4daafc8624e64b9409dc02d 130672026
+
       - name: The committed .docx matches its Markdown source
         # The presentation pack is submitted as a Word document, and it was previously built by
         # hand. It drifted: the Markdown was corrected several times while the .docx kept
