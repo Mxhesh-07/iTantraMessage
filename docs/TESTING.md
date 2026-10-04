@@ -272,8 +272,8 @@ is the right one.
 | **Live microphone capture** | needs `RECORD_AUDIO` granted | `AudioRecord` capture and the `ChatViewModel` → `SherpaSpeechRecognizer` hand-off are unverified. `RECORD_AUDIO` could not be granted programmatically on the test handset — ColorOS rejects both `pm grant` and `appops set` — and the permission dialog is only reachable from a blocker that needs a second peer. See §4.6 for what *is* covered. |
 | **STT accuracy** | needs a labelled corpus per language | word error rate for all ten languages is `NOT MEASURED`. The tests prove the recogniser produces words, not that it produces *correct* words. |
 
-`androidTest` has **4 tests** (§4.6) and Robolectric is not in the local dependency cache;
-adding it would break the offline-reproducible build (`BUILD.md` §3.5).
+`androidTest` has **4 instrumented tests** (§4.6) and Robolectric is not in the local
+dependency cache; adding it would break the offline-reproducible build (`BUILD.md` §3.5).
 
 ### 5.1 The gap that matters most
 
@@ -479,7 +479,7 @@ realme Narzo 10A (RMX2020, **API 30**). Serials and MACs are omitted deliberatel
 | the identification handshake completes | `PeerIdentity: peer 00:11:22:33:44:55 announced IT-D1EAA1` |
 | device ids are minted per device | `ItantraMessageApp: generated encryption key, generation 1` on both |
 | the bundled speech model extracts and verifies | `ModelStore: extracted …/files/whisper-base, 153 MB verified` on a realme RMX2020, API 30 |
-| Whisper transcribes real speech to real words | `DECODED in 5151ms: [And so my fellow Americans asked not what your country can do for you, …]` — 9/9 expected words |
+| Whisper transcribes real speech to real words | measured on this handset: `DECODED in 5151ms: [And so my fellow Americans asked not what your country can do for you, …]` — 9/9 expected words |
 | all ten dictation languages build a recogniser | `SherpaNeural: recognition language now hi` through `… or`, then `WhisperDecodeTest: language or ok` |
 | silence does not crash the process | `WhisperDecodeTest: silence produced []` |
 
