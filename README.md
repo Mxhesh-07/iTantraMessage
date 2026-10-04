@@ -20,7 +20,7 @@ Apache-2.0 licensed. Copyright 2026 iTantra Message contributors.
 | version | 0.1.0 |
 | unit tests | **396 passing**, 0 failures (198 methods × debug + release) |
 | instrumented tests | **4 passing** on a real handset — real Whisper decode of real speech, all 10 languages |
-| release APK | 196,624,703 bytes, no `INTERNET` |
+| release APK | 196,626,175 bytes, no `INTERNET` |
 | offline gate | passing, with a live negative control |
 | two-device run | **partial** — RFCOMM link and the identity handshake are confirmed working across two real handsets. **A message has not yet been delivered end to end.** |
 

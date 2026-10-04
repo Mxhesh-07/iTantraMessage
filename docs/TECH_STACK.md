@@ -143,7 +143,7 @@ confidence.
 | Item | Value |
 |---|---|
 | Gradle + KSP, R8 minify + resource shrinking (release) | IMPLEMENTED |
-| Release APK | 196,624,703 bytes, no `INTERNET` |
+| Release APK | 196,626,175 bytes, no `INTERNET` |
 | Debug APK | 214,334,743 bytes, has `INTERNET` (the negative control) |
 | Unit tests | 198 per variant, 396 executions, 0 failures |
 | Instrumented tests | 4, passing on a real handset; need a device, not in the `gates.yml` unit gate |

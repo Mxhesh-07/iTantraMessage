@@ -1,7 +1,7 @@
 # iTantra Message â€” Project Presentation Pack
 
 **Package** `in.isro.sih26173.itantramessage` Â· **Version** 0.1.0 Â· **Language** Kotlin
-**Release APK** 196,624,703 bytes Â· **Unit tests** 198 per variant, 396 executions, 0 failures
+**Release APK** 196,626,175 bytes Â· **Unit tests** 198 per variant, 396 executions, 0 failures
 **Instrumented tests** 4, passing on a real handset
 **Release `INTERNET` permission** absent
 
@@ -70,7 +70,7 @@ internet permission in the shipped build.
 | `compileSdk` / `targetSdk` | 36 / 36 | Equal on purpose. An unset `targetSdk` compiles to `minSdk`; found by dumping the built APK. |
 | `minSdk` | 24 (Android 7.0) | Covers the low-end hardware the brief targets. |
 | JVM target | 17 | Required by the current Android Gradle Plugin toolchain. |
-| Release build | R8 minify + resource shrinking | 196,624,703 bytes â€” but 99.3% of that is the Whisper model plus the native libraries that run it. The app's own code and resources are ~1.36 MB. |
+| Release build | R8 minify + resource shrinking | 196,626,175 bytes â€” but 99.3% of that is the Whisper model plus the native libraries that run it. The app's own code and resources are ~1.36 MB. |
 | ABIs | `arm64-v8a`, `armeabi-v7a` | arm64 covers essentially every device from 2017 on; v7a covers the 32-bit tail minSdk 24 admits. |
 
 ### 2.2 Libraries: AndroidX, Jetpack, and one third-party
@@ -407,7 +407,7 @@ Four frames, two each way. Neither private key is ever transmitted.
 |---|---|
 | Can two phones talk without a network? | Yes. RFCOMM over paired Bluetooth, BLE GATT and Wi-Fi Direct are all available as raw platform APIs, all used here with no Play Services. |
 | Is the crypto achievable on-device? | Yes. AES-256-GCM, RSA and HMAC-SHA256 are in the platform Keystore and `javax.crypto` on every device at `minSdk` 24. |
-| Does it fit low-end hardware? | **With a caveat that was not in the original answer.** The application code and resources are ~1.36 MB and load fast, but the artifact is now 196,624,703 bytes because a 153 MB Whisper model is bundled so dictation works offline. Measured on the test device, *installing* it needs ~1.1 GB free at commit time. On a nearly-full low-end handset that is the thing that fails, not the runtime. See Â§12. |
+| Does it fit low-end hardware? | **With a caveat that was not in the original answer.** The application code and resources are ~1.36 MB and load fast, but the artifact is now 196,626,175 bytes because a 153 MB Whisper model is bundled so dictation works offline. Measured on the test device, *installing* it needs ~1.1 GB free at commit time. On a nearly-full low-end handset that is the thing that fails, not the runtime. See Â§12. |
 | Is the wire format small enough for BLE? | The header is 47 bytes, below the 247-byte maximum ATT payload and requiring reassembly against the 23-byte default MTU. `NETWORK_PROTOCOL.md` has the layout. |
 | Can voice be done offline? | **Done.** Whisper base int8 via sherpa-onnx, bundled in the APK, decoded on device. Verified on a realme RMX2020: 11.00 s of speech transcribed in 5,151 ms, real-time factor â‰ˆ0.47Ã—. All ten languages build a working session. Word error rate per language is `NOT MEASURED`. See Â§6.5. |
 
@@ -624,7 +624,7 @@ implementation â€” the two cannot disagree.
 | Stakeholder | Benefit |
 |---|---|
 | User in a network outage | Messages still send. The failure mode that motivated the app is removed rather than mitigated. |
-| User with a low-end handset | The app's own code and resources are ~1.36 MB, and there is no network client, no ads and no crash reporter, so nothing is loaded over a slow link. **But** the artifact is 196,624,703 bytes because offline dictation ships a 153 MB model inside it, and installing that needs ~1.1 GB free â€” measured. A user on a full handset may simply not be able to install it. That is a real cost of the feature, not a rounding error. |
+| User with a low-end handset | The app's own code and resources are ~1.36 MB, and there is no network client, no ads and no crash reporter, so nothing is loaded over a slow link. **But** the artifact is 196,626,175 bytes because offline dictation ships a 153 MB model inside it, and installing that needs ~1.1 GB free â€” measured. A user on a full handset may simply not be able to install it. That is a real cost of the feature, not a rounding error. |
 | Privacy-sensitive user | End-to-end encryption with the key never leaving either device's Keystore, and no server that can be compelled to disclose. |
 | Battery-critical user | No background network polling, because there is no network client. |
 | Organisation | No server to secure, patch, pay for or breach. The attack surface is two radios and one device. |
@@ -768,7 +768,7 @@ reader deciding whether this project is right for them needs to know where the e
 | Range and throughput per transport | **NOT MEASURED** |
 
 Three rows elsewhere in this document are measured, and each is labelled at the point of use: the
-196,624,703-byte release APK and the 396 passing unit-test executions are properties of a build
+196,626,175-byte release APK and the 396 passing unit-test executions are properties of a build
 artifact, and the Whisper decode â€” 11.00 s of speech in 5,151 ms, measured on a realme RMX2020 â€”
 is the one runtime measurement in the project.
 

@@ -234,7 +234,7 @@ release {
 }
 ```
 
-Measured 2026-10-05: **196,624,703 bytes** release, 214,334,743 debug. The ~1.09× difference is
+Measured 2026-10-05: **196,626,175 bytes** release, 214,334,743 debug. The ~1.09× difference is
 R8 plus resource shrinking; debug is unminified with full tooling.
 
 The size is dominated by a bundled asset, not by code: `assets/models/whisper-base/` is
@@ -354,7 +354,7 @@ Measured 2026-10-05, version 0.1.0:
 
 | | |
 |---|---|
-| `assembleRelease` | exit 0, 196,624,703 bytes |
+| `assembleRelease` | exit 0, 196,626,175 bytes |
 | `assembleDebug` | exit 0, 214,334,743 bytes |
 | `assembleDebugAndroidTest` | exit 0, 7,587,766 bytes |
 | `testDebugUnitTest` | exit 0, **198 tests**, 0 failures |

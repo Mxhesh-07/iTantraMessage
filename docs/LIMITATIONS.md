@@ -112,7 +112,7 @@ recording, so there is no partial transcript and no live word-by-word caption. `
 is always `false` for this engine and the UI renders nothing until the button is released. That
 is a property of the model, not a missing feature.
 
-**The install is 196,624,703 bytes and the model is 99.3% of it.** Measured on the test device,
+**The install is 196,626,175 bytes and the model is 99.3% of it.** Measured on the test device,
 installing needs roughly **1.1 GB free** at `PackageInstaller` commit time — about 5× the APK.
 It failed at 1.01 GB free and succeeded at 1.22 GB. On a handset that is more than half full
 this feature is what makes the app fail to install. Options exist — a smaller model, an

@@ -15,7 +15,7 @@ Inventing the rest would make this file worse than an empty one.
 |---|---|
 | cold start | **NOT MEASURED** |
 | warm start | **NOT MEASURED** |
-| APK size (release) | **196,624,703 bytes** — measured (`ls` on `app-release.apk`) |
+| APK size (release) | **196,626,175 bytes** — measured (`ls` on `app-release.apk`) |
 | APK size (debug) | **214,334,743 bytes** — measured (`ls` on `app-debug.apk`) |
 | APK size (androidTest) | **7,587,766 bytes** — measured |
 | STT decode, 11.00 s of speech | **5,151 ms** — measured, realme RMX2020, real-time factor ≈0.47× |
@@ -68,12 +68,20 @@ Two consequences:
 
 ## 3. Decisions made for performance, and their rationale
 
-### 3.1 The release APK is 196,624,703 bytes, and 82% of it is the speech model
+### 3.1 The release APK is 196,626,175 bytes, and 82% of it is the speech model
 
 Measured, and the composition is worth stating plainly because it reverses the previous
 trade-off in this project: until Whisper was bundled the release artifact was 1,364,843 bytes
 and size was a design constraint worth optimising. It is now dominated by a file that cannot be
 optimised away without losing offline dictation.
+
+The size is reproducible, which is worth saying because an APK size is exactly the kind of number
+that drifts without anyone noticing: three independent `clean assembleRelease` runs produced
+196,626,175 bytes every time. An earlier measurement in this project read 1,472 bytes lower, a
+difference of 0.0007%, and its cause was never established. That is also why the CI gate accepts
+a quoted figure within 5% rather than demanding an exact match — a gate that fails on a correct
+build teaches people to ignore red, and every failure this project has actually had was far
+outside that band.
 
 | contributor | bytes | share |
 |---|---:|---:|
@@ -81,7 +89,7 @@ optimised away without losing offline dictation.
 | `assets/models/whisper-base/base-encoder.int8.onnx` | 29,120,534 | 14.8% |
 | native libraries, both ABIs (`libsherpa-onnx-jni`, `libonnxruntime`, 2 AndroidX) | 34,655,644 | 17.6% |
 | `assets/models/whisper-base/base-tokens.txt` | 816,730 | 0.4% |
-| everything else — classes, resources, Room schema, Compose | ~1,359,769 | 0.7% |
+| everything else — classes, resources, Room schema, Compose | ~1,361,241 | 0.7% |
 
 So roughly **99.3%** of the artifact is the model plus the two native libraries that run it, and
 the application's own code and resources are about 1.36 MB — the same size the whole APK used to

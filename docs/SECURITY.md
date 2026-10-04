@@ -51,7 +51,7 @@ guarantee quietly stops being checked:
 | 2 | debug also lacks it — inconclusive, the check detected nothing |
 | 3 | `aapt` or an APK missing — cannot verify |
 
-Measured 2026-10-05 on the 0.1.0 build: release 196,624,703 bytes, no `INTERNET`; debug
+Measured 2026-10-05 on the 0.1.0 build: release 196,626,175 bytes, no `INTERNET`; debug
 214,334,743 bytes, has it; exit 0.
 
 ### 1.2 How a dependency could break it
