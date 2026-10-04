@@ -2,16 +2,32 @@
 <!--
   DEBUG-ONLY manifest. Merged into debug builds only; the release APK never sees it.
 
-  The single permission here is the one thing this project exists to prove the release
-  build does not have. It is required in debug because the Dart VM service and the
-  Compose tooling inspector both open a socket back to the development host; without it
-  the IDE cannot attach and hot reload does not work.
+  INTERNET is required in debug because the Dart VM service and the Compose tooling
+  inspector both open a socket back to the development host; without it the IDE cannot
+  attach and hot reload does not work.
 
   scripts/check_offline.sh runs aapt against build/app/outputs/apk/release/app-release.apk
   and fails if android.permission.INTERNET appears there. Because Gradle merges per
   source-set, its presence here is exactly what makes that check meaningful: the same
   dependency graph produces an APK with the permission in debug and without it in
   release. If it ever appears in release, something stopped being debug-only.
+
+  THE MICROPHONE PERMISSIONS BELOW ARE DEBUG-ONLY FOR THE SAME REASON, and this is the more
+  important half of the file. NeuralEngineFactory.USE_REAL_NEURAL is `false`, so no shipped
+  build of this app contains a working speech recogniser; it would have been trivially easy to
+  declare RECORD_AUDIO in the main manifest "for later" and never think about it again. But a
+  release APK that advertises microphone access it never uses is a permission prompt in
+  disguise, and this project's entire claim is that it asks for nothing it does not use.
+  Declaring it here means a user installing the release is shown no microphone prompt and the
+  OS grants nothing.
+
+  If the speech engine is ever enabled, meaning a real ONNX model, a real runtime, and
+  USE_REAL_NEURAL flipped to true, then these four move back to the main manifest. That is
+  deliberate extra work, because doing it should require a conscious decision that the feature
+  now exists, not a side effect of writing the code.
+
+  UPDATE 2026-10-04: that decision was made. The four permissions are back in
+  app/src/main/AndroidManifest.xml, and this file is once again only about INTERNET.
 -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.INTERNET" />

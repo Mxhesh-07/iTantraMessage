@@ -49,6 +49,22 @@ data class HomeUiState(
     val queuedCount: Int = 0,
     val transport: Transport = Transport.RFCOMM,
     val blocker: NearbyError? = null,
+
+    /**
+     * Whether to offer "open Bluetooth settings" alongside the enable request.
+     *
+     * False until the system request has been tried and came back with the radio still
+     * off. `ACTION_REQUEST_ENABLE` is not honoured on every build -- ColorOS routes it
+     * through a helper Activity that can fail to show, and from API 33 the platform
+     * refuses it outright without BLUETOOTH_CONNECT -- so on those devices the first tap
+     * looks like a dead button.
+     *
+     * Rather than showing two buttons from the start, which would send a user who has not
+     * yet tried to the system settings for no reason, this flips only once the in-app
+     * route has provably not worked. It resets as soon as the radio is on, so a user who
+     * later turns Bluetooth off is offered the request first again.
+     */
+    val offerBluetoothSettings: Boolean = false,
     val message: String? = null,
     val openConversation: ConversationId? = null,
 ) {
@@ -98,6 +114,7 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
 
     /** The scan job, held so a second Search press cancels rather than doubles up. */
     private var scanJob: Job? = null
+    private var hasRequestedFirstTime = false
 
     /**
      * The identification deadline, cancelled the moment the peer identifies itself.
@@ -109,6 +126,18 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
      * happened. A timeout that cannot be cancelled is a lie waiting for a slow success.
      */
     private var identifyJob: Job? = null
+
+    /**
+     * Whether an enable request has been issued and not yet answered.
+     *
+     * Set by [onBluetoothEnableRequested] and cleared by the next [onBluetoothEnabled].
+     * This is what stops the "open Bluetooth settings" button from appearing on a cold
+     * start: `onResume` reports the radio state on every launch, and treating that report
+     * as a failed request offered the settings shortcut to a user who had never tapped
+     * anything. The button is meant to say "the in-app route was tried and did not work",
+     * and only an actual request can establish that.
+     */
+    private var enableRequestPending = false
 
     init {
         // Reflect the real blocker at construction rather than waiting for the first
@@ -442,8 +471,8 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
     fun requiredPermissions(): Array<String> = nearby.requiredRuntimePermissions()
 
     fun onPermissionResult(granted: Boolean) {
+        _state.update { it.copy(blocker = nearby.currentBlocker()) }
         if (granted) {
-            _state.update { it.copy(blocker = null) }
             startScan()
         } else {
             // A denial is not a dead end: the state carries a message the Home screen
@@ -457,6 +486,71 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
     }
+
+    /**
+     * React to what the Bluetooth radio actually is.
+     *
+     * Called from three places -- after the system enable request, and from the Activity's
+     * onResume -- because "is the radio on" is a property of the radio. None of those three
+     * callers can be trusted alone: the enable request's result code is unreliable on some
+     * OEM builds, and the user can also just flip the quick-settings tile without ever
+     * touching this app.
+     *
+     * When the request has been made and the radio is still off, [HomeUiState.offerBluetoothSettings]
+     * is set so the card offers the route that always works. It is not a fallback that
+     * fakes success: nothing here turns the radio on, it only offers the user somewhere
+     * they can.
+     */
+    fun onBluetoothEnabled(enabled: Boolean) {
+        val requested = enableRequestPending
+        enableRequestPending = false
+
+        val blocker = nearby.currentBlocker()
+        if (enabled) {
+            _state.update {
+                it.copy(blocker = null, offerBluetoothSettings = false, message = null)
+            }
+            // Only start if the user is not already mid-scan or mid-connect. onResume
+            // fires on every return to the screen, including coming back from Settings
+            // after already scanning, and a second scan would drop the device list the
+            // user was in the middle of reading.
+            if (blocker == null && !_state.value.isBusy) startScan()
+            return
+        }
+
+        // Still off. Only escalate to the settings shortcut if this report is the answer
+        // to a request the user actually made -- otherwise a cold start with Bluetooth off
+        // would show a second button the user never asked for and had no reason to use.
+        val escalate = requested && blocker is NearbyError.BluetoothOff
+        _state.update {
+            it.copy(
+                isScanning = false,
+                blocker = blocker,
+                offerBluetoothSettings = it.offerBluetoothSettings || escalate,
+                message = if (escalate) {
+                    "The in-app request did not turn Bluetooth on. " +
+                        "Open Bluetooth settings to switch it on, then come back."
+                } else {
+                    it.message
+                },
+            )
+        }
+    }
+
+    /**
+     * Record that an enable request is about to be issued.
+     *
+     * Called immediately before the Activity launches the system dialog. Without it the
+     * next [onBluetoothEnabled] cannot tell an answered request from the routine state
+     * report that [MainActivity.onResume] sends on every return to the screen, and the
+     * "open Bluetooth settings" fallback would show up for users who never pressed the
+     * button.
+     */
+    fun onBluetoothEnableRequested() {
+        enableRequestPending = true
+    }
+
+
 
     /**
      * Peers to show, minus this handset.

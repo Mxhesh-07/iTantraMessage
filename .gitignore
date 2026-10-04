@@ -1,6 +1,7 @@
 # Build outputs
 build/
 .gradle/
+.kotlin/
 *.apk
 *.aab
 *.ap_
@@ -11,7 +12,10 @@ build/
 local.properties
 *.keystore
 *.jks
+*.p12
+*.pfx
 key.properties
+release-keystore*
 
 # IDE
 .idea/

@@ -67,6 +67,7 @@ fun HomeScreen(
     onSelectDevice: (NearbyDevice) -> Unit,
     onSelectTransport: (Transport) -> Unit,
     onRetry: () -> Unit,
+    onOpenBluetoothSettings: () -> Unit,
     onDismissMessage: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -92,7 +93,9 @@ fun HomeScreen(
         state.blocker?.let { blocker ->
             BlockerCard(
                 error = blocker,
+                offerBluetoothSettings = state.offerBluetoothSettings,
                 onRetry = onRetry,
+                onOpenBluetoothSettings = onOpenBluetoothSettings,
             )
         }
 
@@ -127,6 +130,7 @@ fun HomeScreen(
                 text = stringResource(R.string.home_no_devices),
                 style = MaterialTheme.typography.bodyLarge,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(vertical = 8.dp),
             )
         }
 
@@ -287,11 +291,26 @@ private fun DeviceRow(
  * opens Settings, missing permission re-requests, unsupported offers nothing because
  * there is genuinely nothing to do. Showing a retry button for "this device has no
  * Bluetooth radio" would be offering the user a dead end.
+ *
+ * ## Why there can be two buttons
+ *
+ * "Turn on Bluetooth" asks the platform for the confirmation dialog, which is the right
+ * thing to try first. It is not honoured everywhere: on the ColorOS build this was tested
+ * on, the vendor's replacement for that dialog does not reliably appear, and from API 33
+ * the platform refuses the request outright unless BLUETOOTH_CONNECT is held. Both cases
+ * present identically -- a button that does nothing when tapped.
+ *
+ * So once [offerBluetoothSettings] is set, a second button appears that goes to the system
+ * Bluetooth settings screen, where the toggle genuinely is. It is not a substitute for
+ * working: nothing here enables the radio, and the card still says Bluetooth is off until
+ * the adapter reports otherwise.
  */
 @Composable
 private fun BlockerCard(
     error: NearbyError,
+    offerBluetoothSettings: Boolean,
     onRetry: () -> Unit,
+    onOpenBluetoothSettings: () -> Unit,
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -310,16 +329,37 @@ private fun BlockerCard(
                 style = MaterialTheme.typography.bodyLarge,
             )
             when (error) {
-                NearbyError.BluetoothOff -> OutlinedButton(
-                    onClick = onRetry,
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Text(stringResource(R.string.home_turn_on_bluetooth))
+                NearbyError.BluetoothOff -> {
+                    Button(
+                        onClick = onRetry,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text(stringResource(R.string.home_turn_on_bluetooth))
+                    }
+                    if (offerBluetoothSettings) {
+                        // Stacked rather than side by side: at 360dp two buttons with
+                        // these labels cannot both fit without wrapping, and a wrapped
+                        // label on a 44dp target is unreadable.
+                        OutlinedButton(
+                            onClick = onOpenBluetoothSettings,
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Text(stringResource(R.string.home_open_bluetooth_settings))
+                        }
+                    }
                 }
                 // The permission request is launched by the Activity, which is the only
                 // context with an ActivityResultLauncher. HomeScreen only reports the
                 // outcome, so the button re-runs the same path as a fresh search.
-                NearbyError.PermissionMissing, is NearbyError.Unsupported -> Unit
+                is NearbyError.PermissionMissing -> {
+                    Button(
+                        onClick = onRetry,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text(stringResource(R.string.home_grant_permissions))
+                    }
+                }
+                is NearbyError.Unsupported -> Unit
                 is NearbyError.ConnectFailed, is NearbyError.TransportFailed -> Unit
             }
         }
@@ -360,14 +400,17 @@ private fun HomeScreenPreview() {
             state = HomeUiState(
                 devices = listOf(
                     NearbyDevice(
-                        address = "94:8A:C6:30:4C:94",
+                        // Deliberately not a real address. This used to be the MAC of the
+                        // test handset, which put a hardware identifier in the repository
+                        // and in every screenshot ever taken of this preview.
+                        address = "00:11:22:33:44:55",
                         name = "realme Narzo 10A",
                         transport = Transport.RFCOMM,
                         rssiDbm = null,
                         isBonded = true,
                     ),
                     NearbyDevice(
-                        address = "AA:BB:CC:DD:EE:FF",
+                        address = "AA:BB:CC:DD:EE:FF",  // also synthetic; kept distinct from the above
                         name = null,
                         transport = Transport.GATT,
                         rssiDbm = -67,
@@ -381,6 +424,7 @@ private fun HomeScreenPreview() {
             onSelectDevice = {},
             onSelectTransport = {},
             onRetry = {},
+            onOpenBluetoothSettings = {},
             onDismissMessage = {},
         )
     }

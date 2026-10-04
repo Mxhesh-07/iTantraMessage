@@ -155,6 +155,18 @@ interface MessageDao {
         to: String,
     ): Int
 
+    /**
+     * The row's current status, read fresh.
+     *
+     * This exists because [transition] is a compare-and-set and the value it compares against
+     * has to be the row's *actual* state, not a snapshot taken before another statement ran.
+     * Passing a stale `expectedFrom` does not fail loudly: the UPDATE simply matches zero rows
+     * and the message sits in its old state forever, which is exactly the "stuck on Sending"
+     * symptom this method was added to prevent. See MessageRepository.transition.
+     */
+    @Query("SELECT status FROM messages WHERE message_id = :messageId")
+    suspend fun statusOf(messageId: String): String?
+
     /** Record a send failure: bump the retry count and store the reason. */
     @Query(
         """
@@ -164,6 +176,27 @@ interface MessageDao {
         """,
     )
     suspend fun recordFailure(messageId: String, to: String, error: String): Int
+
+    /**
+     * Record a failed attempt while leaving the row eligible for another one.
+     *
+     * The row returns to PENDING rather than moving to FAILED, because FAILED is terminal and
+     * [pendingForDelivery] would then never return it -- which silently reduced the whole
+     * retry budget to a single attempt. `WHERE status != 'FAILED'` keeps this from reviving a
+     * row something else has already given up on.
+     *
+     * SENDING -> PENDING is the transition this performs, and
+     * [in.isro.sih26173.itantramessage.data.database.DeliveryStatus.canTransitionTo] permits
+     * it: the write is no longer in flight, the message is waiting to be tried again.
+     */
+    @Query(
+        """
+        UPDATE messages
+        SET status = 'PENDING', retry_count = retry_count + 1, last_error = :error
+        WHERE message_id = :messageId AND status != 'FAILED'
+        """,
+    )
+    suspend fun recordRetry(messageId: String, error: String): Int
 
     /** Write a partial update, for the draft-to-sent transition. */
     @Update

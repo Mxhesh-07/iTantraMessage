@@ -86,6 +86,17 @@ class RfcommTransport private constructor(
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     private var socket: BluetoothSocket? = null
+
+    /**
+     * The socket currently being dialled, before [connect] has returned.
+     *
+     * Volatile because it is written on the connect worker thread and read on the
+     * cancelling thread, and because it exists for one reason only: to let a timeout close
+     * a socket whose `connect()` has not returned yet. See [openSocket].
+     */
+    @Volatile
+    private var dialling: BluetoothSocket? = null
+
     private var readerJob: Job? = null
     private var writerJob: Job? = null
 
@@ -181,18 +192,86 @@ class RfcommTransport private constructor(
     }
 
     /**
-     * Open the socket and hand it back, without closing it.
+     * Open the socket, off the calling thread, and stay cancellable while it blocks.
      *
-     * Split out of [connect] because `use { }` here would close the socket the instant
-     * the block returns, which is the single easiest way to get a "connected then instantly
+     * ## The defect this exists to fix
+     *
+     * This was `private fun openSocket(): BluetoothSocket` called straight inside
+     * `withTimeoutOrNull(CONNECT_TIMEOUT_MS) { runCatching { openSocket() } }`.
+     *
+     * That looks like a timeout and is not one. `BluetoothSocket.connect()` is a blocking
+     * `java.net.Socket.connect()`, and `runCatching` is not a suspension point, so the
+     * coroutine never suspends inside the `withTimeoutOrNull` block. Cancellation in
+     * coroutines is cooperative and can only be observed at a suspension point, so the
+     * timeout could not fire until after `connect()` returned on its own -- which, against
+     * a paired handset that is powered off or not running the app, it never did.
+     *
+     * Observed on a realme Narzo 10A: tapping a bonded peer that was not listening left
+     * the row spinning with `isConnecting` stuck true and no message, for over 40 seconds
+     * and counting, with `Log.w(TAG, "connect ... failed")` never reached. The only escape
+     * was leaving the screen. A button that appears to work and does nothing is the exact
+     * failure this project refuses elsewhere, so a timeout that cannot time out is not
+     * acceptable just because it reads well in the source.
+     *
+     * ## Why a thread rather than `runInterruptible`
+     *
+     * `runInterruptible` interrupts the worker, and `BluetoothSocket.connect()` does not
+     * honour interruption: the underlying native connect keeps waiting. Interrupting would
+     * leave the thread blocked and the socket dangling, which is worse than the original
+     * bug. Closing the socket does unblock it -- the pending connect fails, the thread
+     * unwinds, and the exception arrives on a continuation nobody is waiting for.
+     *
+     * So cancellation closes [dialling], which is why that field exists.
+     */
+    private suspend fun openSocket(): BluetoothSocket = suspendCancellableCoroutine { cont ->
+        val worker = Thread({
+            try {
+                val opened = openSocketBlocking()
+                if (cont.isActive) {
+                    cont.resume(opened)
+                } else {
+                    // Raced the timeout and lost. Nobody wants this socket; closing it here
+                    // rather than leaking it is the whole reason the resume is guarded.
+                    runCatching { opened.close() }
+                }
+            } catch (t: Throwable) {
+                if (cont.isActive) cont.resumeWith(Result.failure(t))
+            }
+        }, "itantra-rfcomm-dial")
+
+        // A daemon thread: a blocked connect must never be the reason the process stays
+        // alive after the user has left the screen.
+        worker.isDaemon = true
+
+        cont.invokeOnCancellation {
+            // Close first, then interrupt. The close is what actually releases the connect;
+            // the interrupt is a nudge for the case where the thread is between operations.
+            runCatching { dialling?.close() }
+            runCatching { dialling = null }
+            worker.interrupt()
+        }
+
+        worker.start()
+    }
+
+    /**
+     * The blocking half of [openSocket]: create the socket and connect it.
+     *
+     * Split out because `use { }` around the caller would close the socket the instant the
+     * block returns, which is the single easiest way to get a "connected then instantly
      * read ret: -1" bug. The socket is closed by [close], not by a scope.
      */
     @SuppressLint("MissingPermission") // Caller checked permissions before constructing.
-    private fun openSocket(): BluetoothSocket {
+    private fun openSocketBlocking(): BluetoothSocket {
         val target = checkNotNull(device) {
-            "openSocket() on a transport that did not dial a device"
+            "openSocketBlocking() on a transport that did not dial a device"
         }
         val candidate = target.createRfcommSocketToServiceRecord(SPP_UUID)
+
+        // Published before connecting, not after. A timeout can only close a socket it can
+        // see, and it fires while connect() is still blocked -- so the reference has to
+        // exist for the whole duration of the blocking call, not just its happy ending.
+        dialling = candidate
 
         // NOTE: no SDP discovery call is made here. `BluetoothSocket.startServiceDiscovery()`
         // does not exist in the public SDK -- an early draft of this class called it and
@@ -208,6 +287,8 @@ class RfcommTransport private constructor(
             // keeps a dangling reference that blocks the next attempt.
             runCatching { candidate.close() }
             throw t
+        } finally {
+            dialling = null
         }
 
         socket = candidate
@@ -299,7 +380,10 @@ class RfcommTransport private constructor(
      * so the blocked read throws and the reader exits.
      */
     override fun close() {
-        if (!_open.value && socket == null) return
+        // A dial still in flight counts as "not closed". Without this clause the early
+        // return below would skip the socket close, so leaving the screen during a stalled
+        // connect would leak exactly the blocked thread the timeout exists to bound.
+        if (!_open.value && socket == null && dialling == null) return
         _open.value = false
 
         // Poison pill: a frame that the writer will pick up and fail to write, which is
@@ -309,6 +393,13 @@ class RfcommTransport private constructor(
         runCatching { socket?.close() }
             .onFailure { Log.w(TAG, "socket close: ${it.javaClass.simpleName}") }
         socket = null
+
+        // Closes the in-flight socket, which unblocks a connect() that is still waiting.
+        // Same reason as the cancellation path in openSocket: close is what releases it,
+        // and nothing else here would.
+        runCatching { dialling?.close() }
+            .onFailure { Log.w(TAG, "dialling socket close: ${it.javaClass.simpleName}") }
+        dialling = null
 
         // Both jobs are on Dispatchers.IO and will notice within a poll interval; joining
         // here is best-effort so close() stays non-suspending, as the interface requires.

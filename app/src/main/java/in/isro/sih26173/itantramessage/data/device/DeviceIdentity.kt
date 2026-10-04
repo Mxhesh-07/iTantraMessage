@@ -2,7 +2,6 @@ package `in`.isro.sih26173.itantramessage.data.device
 
 import android.content.Context
 import android.os.Build
-import android.provider.Settings
 import android.util.Log
 
 /**
@@ -19,21 +18,62 @@ import android.util.Log
  *
  * ## What it is
  *
- * 24 bits of random data, generated once and stored in [android.provider.Settings.Secure]
- * under this app's own namespace, formatted as `IT-XXXXXX`.
+ * 24 bits of random data, generated once and stored in this app's private
+ * SharedPreferences, formatted as `IT-XXXXXX`.
  *
- * `Settings.Secure` is used rather than SharedPreferences on purpose. It is backed by a
- * per-app file that the user can see and clear from Android's "App info > Clear data", it
- * is included in the app's data wipe, and it is not readable by other apps. A device id
- * stored in a plain file in shared storage would be both more exposed and less clearable.
+ * ## Why SharedPreferences, and why that was not always true
  *
- * ## Why it survives a reinstall as a *new* id
+ * An earlier version stored the id in [android.provider.Settings.Secure] and the class
+ * comment explained at length why that was the right choice: "a device id stored in a plain
+ * file in shared storage would be both more exposed and less clearable".
  *
- * Clearing app data removes the entry, so the next launch mints a new id. That is the
- * correct behaviour: an id that survived a wipe would be a tracking identifier, which is
- * precisely what this design is avoiding. The cost is that a conversation id containing
- * the old id no longer matches, so old messages become unreachable -- which is why
- * Settings > Storage explains the count rather than showing an empty list silently.
+ * Both halves of that reasoning are wrong, and the failure was measured on two handsets.
+ *
+ * `Settings.Secure` is writable only by a holder of `WRITE_SECURE_SETTINGS`, which is a
+ * signature-level permission that no ordinary app can obtain. Every write therefore threw,
+ * the `runCatching` around it swallowed the exception, and the app minted a **fresh random
+ * id on every single launch**. Verified on both test devices:
+ *
+ * ```
+ * adb shell settings get secure itantra_message_device_id   ->  null
+ * ```
+ *
+ * after the app had plainly written it, alongside the framework's own complaint:
+ *
+ * ```
+ * E/DatabaseUtils: java.lang.SecurityException: Permission denial, must have one of:
+ *     [android.permission.WRITE_SECURE_SETTINGS]
+ * ```
+ *
+ * The consequences were not cosmetic. The device id is half of every conversation id, so a
+ * new id on each launch meant:
+ *
+ *  * every queued message became addressed to a peer that no longer existed, and the send
+ *    path marked it FAILED with "no route to that peer" -- user-visible messages destroyed
+ *    by simply opening the app again;
+ *  * the chat screen's title showed the id from the moment of navigation while the live
+ *    value was different; and
+ *  * the two phones agreed on keys within a session but the conversation was unrecognisable
+ *    between them.
+ *
+ * The second error is the more interesting one: SharedPreferences in `MODE_PRIVATE` is not
+ * "shared storage" and is not readable by other apps, and it *is* removed by "Clear data"
+ * and by uninstall. So the properties the comment wanted are all still true of the storage
+ * it rejected. Only the storage was wrong, and it was wrong in the one direction that
+ * matters -- it did not persist.
+ *
+ * This is recorded at length because the failure mode was silent: the write path had a
+ * `runCatching`, so the app started normally, looked healthy, and quietly produced a new
+ * identity on every launch. A defensive catch around a write that must succeed is only
+ * defensible if something reports when it does not.
+ *
+ * ## Why a reinstall or a wipe yields a *new* id
+ *
+ * Clearing app data or uninstalling removes the entry, so the next launch mints a new id.
+ * That is the correct behaviour: an id that survived a wipe would be a tracking identifier,
+ * which is precisely what this design avoids. The cost is that a conversation id containing
+ * the old id no longer matches, so old messages become unreachable -- which is why Settings
+ * > Storage explains the count rather than showing an empty list silently.
  */
 class DeviceIdentity(context: Context) {
 
@@ -42,9 +82,9 @@ class DeviceIdentity(context: Context) {
     /**
      * The stable id, minted on first call.
      *
-     * `Settings.Secure` writes are synchronous and the value is read on first use during
-     * startup. That is a single small file read, once per process, and it is cheaper than
-     * the alternative of holding a DataStore flow open for a value that never changes.
+     * Read once per process on first use. That is a single small preferences read at
+     * startup, and it is cheaper than holding a DataStore flow open for a value that never
+     * changes once written.
      */
     val id: String by lazy { loadOrCreate() }
 
@@ -59,37 +99,46 @@ class DeviceIdentity(context: Context) {
         if (model.isNotEmpty()) model else "Android device"
     }
 
-    private fun loadOrCreate(): String {
-        val resolver = appContext.contentResolver
+    /**
+     * The preferences file holding the id.
+     *
+     * `commit()` rather than `apply()` at the one place that matters. `apply()` returns
+     * immediately and flushes in the background, so a process killed moments after first
+     * launch -- which is exactly what happens when the user installs and the system reclaims
+     * memory -- can lose the write and mint a second id. One synchronous write of six bytes
+     * on first launch only is not a cost worth optimising away.
+     */
+    private val prefs by lazy {
+        appContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+    }
 
-        // read as a String and parsed here, not Settings.Secure.getInt: the getInt
-        // overload takes (ContentResolver, name) and throws NumberFormatException on a
-        // value this app did not write, which a corrupted or hand-edited setting would
-        // otherwise turn into a crash on startup. Parsing a nullable String makes a
-        // malformed value the same "no id yet" case an absent one is.
-        val existing = runCatching {
-            Settings.Secure.getString(resolver, KEY_DEVICE_ID)?.trim()
-                ?.takeIf { it.isNotEmpty() }
-                ?.toIntOrNull()
-        }.getOrNull()
+    private fun loadOrCreate(): String {
+        // Read and validate rather than trusting the stored string. Parsed here instead of
+        // relying on getInt, so a malformed value is the same "no id yet" case an absent one
+        // is rather than a NumberFormatException on startup.
+        val existing = prefs.getString(KEY_DEVICE_ID, null)
+            ?.trim()
+            ?.toIntOrNull()
 
         if (existing != null && existing > 0) {
             return format(existing)
         }
 
         val fresh = randomId()
-        val written = runCatching {
-            // Settings.Secure.putInt goes through the settings provider, which is a
-            // ContentProvider and can fail if the profile is locked. Treat a failure as
-            // "use this id for this process" rather than crashing startup: the app
-            // remains usable, and a peer would simply see a different id next launch.
-            // Stored as a decimal string rather than through putInt, so the value has one
-            // representation in the settings provider regardless of how it is read back.
-            Settings.Secure.putString(resolver, KEY_DEVICE_ID, fresh.toString())
-            true
-        }.getOrDefault(false)
 
-        Log.i(TAG, "device id ${if (written) "persisted" else "session-only"}")
+        // No runCatching. The previous version wrapped this write and swallowed the failure,
+        // which is how a permission error that made the app mint a new identity on every
+        // launch stayed invisible for an entire round of hardware testing. A write that the
+        // app cannot survive losing should fail loudly; if this ever throws, the process
+        // dies at startup instead of quietly corrupting every conversation id.
+        val written = prefs.edit().putString(KEY_DEVICE_ID, fresh.toString()).commit()
+
+        if (!written) {
+            Log.e(TAG, "device id could not be persisted; refusing to continue with an id that will not survive")
+            throw IllegalStateException("device id could not be persisted")
+        }
+
+        Log.i(TAG, "device id persisted for this install")
 
         return format(fresh)
     }
@@ -139,9 +188,14 @@ class DeviceIdentity(context: Context) {
     private companion object {
         const val TAG = "DeviceIdentity"
 
+        const val PREFS_NAME = "itantra_message_device"
+
         /**
-         * The settings key. Namespaced so it cannot collide with another app writing to
-         * Settings.Secure, and named for what it is rather than for where it lives.
+         * The key. Named for what it is rather than for where it lives.
+         *
+         * Kept as the same string the previous `Settings.Secure` version used, so the intent
+         * is legible to anyone comparing the two. It is now a SharedPreferences key in this
+         * app's private file, not a global settings entry.
          */
         const val KEY_DEVICE_ID = "itantra_message_device_id"
     }

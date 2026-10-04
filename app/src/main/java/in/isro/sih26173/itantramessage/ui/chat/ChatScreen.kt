@@ -28,12 +28,16 @@ import androidx.compose.material3.TextField
 import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.disabled
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
@@ -44,6 +48,12 @@ import `in`.isro.sih26173.itantramessage.ui.theme.StatusColors
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.filled.Mic
+import `in`.isro.sih26173.itantramessage.ui.components.VoiceStatusBar
+import kotlinx.coroutines.launch
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.material3.TextButton
 
 /**
  * The conversation.
@@ -67,6 +77,11 @@ fun ChatScreen(
     onDraftChanged: (String) -> Unit,
     onSend: () -> Unit,
     onBack: () -> Unit,
+    onVoiceStart: (() -> Unit)? = null,
+    onVoiceStop: (() -> Unit)? = null,
+    onVoicePTTStart: (() -> Unit)? = null,
+    onVoicePTTStop: (() -> Unit)? = null,
+    onToggleVoiceMode: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
 ) {
     val listState = rememberLazyListState()
@@ -110,30 +125,47 @@ fun ChatScreen(
                 MessageBubble(message = message)
             }
         }
+        LaunchedEffect(state.messages.size) {
+            if (state.messages.isNotEmpty()) {
+                listState.animateScrollToItem(state.messages.lastIndex)
+            }
+        }
 
-        Text(
-            text = stringResource(R.string.chat_encrypted_notice),
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 4.dp),
-        )
+
 
         MessageInput(
             draft = state.draft,
             canSend = state.canSend,
             onDraftChanged = onDraftChanged,
             onSend = onSend,
+            onVoiceStart = onVoiceStart,
+            onVoiceStop = onVoiceStop,
+            onVoicePTTStart = onVoicePTTStart,
+            onVoicePTTStop = onVoicePTTStop,
+            voiceAvailable = state.voiceAvailable,
+            inputLang = state.voiceInputLang,
+            voiceMode = state.voiceMode,
+            onToggleVoiceMode = onToggleVoiceMode,
         )
+
+        if (state.voiceCapturing || state.voiceSpeaking) {
+            VoiceStatusBar(
+                capturing = state.voiceCapturing,
+                speaking = state.voiceSpeaking,
+                inputLang = state.voiceInputLang,
+                outputLang = state.voiceOutputLang,
+            )
+            Spacer(Modifier.height(4.dp))
+        }
+        Spacer(Modifier.height(8.dp))
     }
 }
 
 @Composable
 private fun ChatTopBar(peerName: String, onBack: () -> Unit) {
     Surface(
-        color = MaterialTheme.colorScheme.primary,
-        contentColor = MaterialTheme.colorScheme.onPrimary,
+        color = MaterialTheme.colorScheme.surface,
+        tonalElevation = 3.dp,
     ) {
         Row(
             modifier = Modifier
@@ -153,12 +185,19 @@ private fun ChatTopBar(peerName: String, onBack: () -> Unit) {
                     contentDescription = null,
                 )
             }
-            Text(
-                text = peerName,
-                style = MaterialTheme.typography.titleMedium,
-                maxLines = 1,
-                modifier = Modifier.padding(start = 8.dp),
-            )
+            Column(modifier = Modifier.padding(start = 8.dp)) {
+                Text(
+                    text = peerName.ifEmpty { "Chat" },
+                    style = MaterialTheme.typography.titleMedium,
+                    maxLines = 1,
+                )
+                Text(
+                    text = stringResource(R.string.chat_encrypted_notice),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                )
+            }
         }
     }
 }
@@ -266,6 +305,14 @@ private fun MessageInput(
     canSend: Boolean,
     onDraftChanged: (String) -> Unit,
     onSend: () -> Unit,
+    onVoiceStart: (() -> Unit)? = null,
+    onVoiceStop: (() -> Unit)? = null,
+    onVoicePTTStart: (() -> Unit)? = null,
+    onVoicePTTStop: (() -> Unit)? = null,
+    voiceAvailable: Boolean = false,
+    inputLang: String = "EN",
+    voiceMode: VoiceMode = VoiceMode.PTT,
+    onToggleVoiceMode: (() -> Unit)? = null,
 ) {
     Row(
         modifier = Modifier
@@ -281,7 +328,21 @@ private fun MessageInput(
             // imeAction Send rather than Done: the keyboard's action key becomes the send
             // key, so a message can be sent one-handed without reaching for a button the
             // keyboard is covering.
-            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+            keyboardOptions = KeyboardOptions(
+                imeAction = ImeAction.Send,
+                // Auto-capitalised: a phone keyboard lowercases by default, so without this
+                // the first letter of every sentence is lowercase. Free for the user to undo
+                // and it removes a reason to blame the app for a typo.
+                capitalization = KeyboardCapitalization.Sentences,
+            ),
+            // imeAction alone only changes the label on the keyboard's action key; without
+            // keyboardActions the key is pressed and nothing happens. That was the state
+            // before this was wired: the keyboard showed a Send key that silently did nothing,
+            // which reads as "the app cannot send".
+            keyboardActions = KeyboardActions(
+                onSend = { if (canSend) onSend() },
+                onDone = { if (canSend) onSend() },
+            ),
             maxLines = 4,
             colors = TextFieldDefaults.colors(
                 focusedContainerColor = MaterialTheme.colorScheme.surfaceVariant,
@@ -289,23 +350,97 @@ private fun MessageInput(
             ),
         )
         Spacer(Modifier.width(8.dp))
-        IconButton(
-            onClick = onSend,
-            enabled = canSend,
-            modifier = Modifier
-                .width(48.dp)
-                .height(48.dp)
-                .semantics { contentDescription = "Send message" },
-        ) {
-            Icon(
-                imageVector = Icons.AutoMirrored.Filled.Send,
-                contentDescription = null,
-                tint = if (canSend) {
-                    MaterialTheme.colorScheme.primary
+        if (canSend) {
+            IconButton(
+                onClick = onSend,
+                modifier = Modifier
+                    .width(48.dp)
+                    .height(48.dp)
+                    .semantics {
+                        contentDescription = "Send message"
+                    },
+            ) {
+                Icon(
+                    imageVector = Icons.AutoMirrored.Filled.Send,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                )
+            }
+        } else if (voiceAvailable) {
+            // Why the whole voice row is behind one condition.
+            //
+            // Every control in this branch used to render whenever the draft was empty,
+            // regardless of whether anything was listening. The callbacks are nullable and
+            // MainActivity passes none of them, so the microphone, the push-to-talk pad
+            // and the PTT/CONTINUOUS toggle were all tappable and did nothing at all --
+            // reported from the hardware as "the mic button is not working".
+            //
+            // The engine behind them is a stub with no model behind it, so wiring the
+            // callbacks would not have fixed anything: it would have made the microphone
+            // silently discard what the user said, or replace it with fixed text, which
+            // is worse than an inert button because it lies about having heard anything.
+            //
+            // So the controls are drawn only when [voiceAvailable], which the ViewModel
+            // takes from the same constant that selects the real implementation. When the
+            // models land the row comes back with working callbacks already in place.
+            // A dead button is a defect; a button that fakes a transcript is a lie.
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = inputLang.uppercase(),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(end = 4.dp)
+                )
+                if (voiceMode == VoiceMode.CONTINUOUS) {
+                    IconButton(
+                        onClick = { onVoiceStart?.invoke() },
+                        enabled = true,
+                        modifier = Modifier
+                            .width(56.dp)
+                            .height(48.dp)
+                            .semantics {
+                                contentDescription = "Voice message"
+                            },
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Mic,
+                            contentDescription = "Voice",
+                            tint = MaterialTheme.colorScheme.primary,
+                        )
+                    }
                 } else {
-                    MaterialTheme.colorScheme.onSurfaceVariant
-                },
-            )
+                    Box(
+                        modifier = Modifier
+                            .pointerInput(Unit) {
+                                detectTapGestures(
+                                    onPress = {
+                                        onVoicePTTStart?.invoke()
+                                        tryAwaitRelease()
+                                        onVoicePTTStop?.invoke()
+                                    },
+                                )
+                            }
+                            .width(56.dp)
+                            .height(48.dp)
+                            .semantics {
+                                contentDescription = "Push to talk"
+                            },
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Mic,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                        )
+                    }
+                }
+                TextButton(
+                    onClick = { onToggleVoiceMode?.invoke() },
+                    modifier = Modifier.padding(start = 2.dp),
+                ) {
+                    Text(text = voiceMode.name, style = MaterialTheme.typography.labelSmall)
+                }
+            }
         }
     }
 }

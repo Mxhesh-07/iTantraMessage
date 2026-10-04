@@ -110,9 +110,14 @@ When RFCOMM connect fails, the message includes the platform's own words, becaus
 specific in a way that a paraphrase is not:
 
 ```
-RFCOMM connect to 94:8A:C6:30:4C:94 failed:
+RFCOMM connect to 00:11:22:33:44:55 failed:
 read failed, socket might closed or timeout, read ret: -1
 ```
+
+The address in this transcript is redacted to a synthetic one. The real observation used a
+handset's Bluetooth MAC, and a MAC is a hardware identifier that survives a factory reset —
+publishing it in a repository whose entire argument is that this app never handles one would be
+a poor showing. Nothing else in the string is altered, because the rest is the point.
 
 This is the string observed on hardware against three bonded devices, and it is reproduced
 rather than smoothed into "connection failed". "Connection failed" tells a user nothing and a
@@ -122,6 +127,56 @@ simply is not there, which are three different problems with three different fix
 `RfcommTransport` calls `cancelDiscovery()` both before and after connecting. Leaving a scan
 running during an RFCOMM connect reliably starves the connection attempt on Android, and the
 symptom is a timeout that looks like a peer problem.
+
+### 4.1 A timeout that could not time out
+
+`RfcommTransport.connect()` was written as:
+
+```kotlin
+val opened = withTimeoutOrNull(CONNECT_TIMEOUT_MS) {
+    runCatching { openSocket() }
+}
+```
+
+This reads like a bounded connect and was not one. `BluetoothSocket.connect()` is a blocking
+`java.net.Socket.connect()` and `runCatching` is not a suspension point, so the coroutine never
+suspended inside the `withTimeoutOrNull` block. Cancellation in coroutines is cooperative and is
+only observable at a suspension point, so the timeout could not fire until `connect()` returned
+on its own.
+
+Measured on a realme Narzo 10A, 2026-10-04: tapping a bonded peer that was not listening and
+not running the app left the row spinning with `isConnecting` stuck true, for over 40 seconds
+and counting, and the failure line in `HomeViewModel.connect()` was never reached. The only way
+out was leaving the screen, because `HomeUiState.connectingTo` disables the rows.
+
+The fix runs the blocking dial on its own thread and makes the socket cancellable:
+
+- the candidate socket is published in a `@Volatile` field **before** `connect()` is called, so
+  a timeout can see a socket that is still mid-dial;
+- cancellation closes that field and then interrupts the thread;
+- the worker is a daemon, so a blocked connect is never the reason the process stays alive;
+- `close()` clears the same field, so leaving the screen mid-dial releases the thread too.
+
+Closing the socket is what unblocks the pending `connect()`; interrupting alone does not,
+because the native connect does not honour it. That is why cancellation closes rather than
+merely interrupts, and why `runInterruptible` was not used.
+
+Re-verified on the same handset after the change: the same tap now returns and surfaces the
+platform's own text —
+
+```
+HomeViewModel: connect to 00:11:22:33:44:55 failed: read failed, socket might closed or
+timeout, read ret: -1 (check: both phones are on, Bluetooth is on for both, and the two
+devices are paired with each other in Settings > Bluetooth)
+```
+
+The address is redacted here too, for the reason given in §4.
+
+— and the rows become tappable again.
+
+The general lesson, and the reason it is written down: **a timeout wrapped around blocking code
+is not a timeout.** It is an annotation. Any `withTimeout` in this codebase has to be checked
+for a real suspension point inside it.
 
 ---
 

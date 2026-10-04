@@ -51,8 +51,8 @@ guarantee quietly stops being checked:
 | 2 | debug also lacks it — inconclusive, the check detected nothing |
 | 3 | `aapt` or an APK missing — cannot verify |
 
-Measured 2026-10-01 on the 0.1.0 build: release 1.28 MB, no `INTERNET`; debug 17.74 MB, has
-it; exit 0.
+Measured 2026-10-05 on the 0.1.0 build: release 196,624,703 bytes, no `INTERNET`; debug
+214,334,743 bytes, has it; exit 0.
 
 ### 1.2 How a dependency could break it
 
@@ -67,6 +67,11 @@ To find the culprit if it ever happens:
 unzip -p <suspect>.aar AndroidManifest.xml | grep -i internet
 ```
 
+This has already been tested against the one third-party dependency in the project. When
+sherpa-onnx was added for speech-to-text, `check_offline.sh` was run against the resulting
+release APK and found **0** `INTERNET` entries, so that library does not merge the permission in.
+That is a verified property of this build, not an assumption about the library.
+
 ---
 
 ## 2. What the app holds, and where
@@ -76,7 +81,7 @@ unzip -p <suspect>.aar AndroidManifest.xml | grep -i internet
 | message text | AES-GCM ciphertext in Room | see 2.1 |
 | device key | Android Keystore, non-exportable | never in the database, never in source |
 | display name | plaintext in `SharedPreferences` | it is a label, not a secret |
-| device id | `Settings.Secure.ANDROID_ID`, hashed to `IT-%06X` | identifies the install, not the person |
+| device id | 24 random bits in app-private `SharedPreferences`, formatted `IT-%06X` | identifies the install, not the person |
 | phone number | **never collected** | no account, no number, no server |
 
 ### 2.1 The database stores ciphertext, not plaintext
@@ -181,7 +186,15 @@ can reach the link at all.
 
 ## 5. Permissions
 
-10 `uses-permission` entries in the release APK, each with a stated reason.
+**13 `uses-permission` entries in the release APK**, each with a stated reason. This number has
+been wrong here twice: it once said 9 and the manifest had grown four undocumented entries, and
+it then said 9 again after the microphone permissions moved into the release manifest. Counting
+from the source is how both errors happened — the manifest is not the artifact. Verify it
+yourself:
+
+```
+aapt2 dump permissions app/build/outputs/apk/release/app-release.apk
+```
 
 | permission | maxSdk | why |
 |---|---|---|
@@ -193,19 +206,51 @@ can reach the link at all.
 | `ACCESS_FINE_LOCATION` | 30 | BLE scan required location on API 23–30 |
 | `ACCESS_COARSE_LOCATION` | 30 | as above |
 | `NEARBY_WIFI_DEVICES` | 32 | declared for the Wi-Fi Direct path |
+| `RECORD_AUDIO` | — | **offline dictation — microphone capture** |
+| `FOREGROUND_SERVICE_MICROPHONE` | — | recording continues while the UI is backgrounded |
+| `WAKE_LOCK` | — | keep the CPU alive for the length of an utterance |
+| `VIBRATE` | — | capture-state and error feedback |
 | `…DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION` | — | added by androidx, not by this app |
 
 `INTERNET` is **absent**, and that absence is the point — see §1.
 
-`NEARBY_WIFI_DEVICES` is declared but unused: Wi-Fi Direct has no implementation. It is
-declared rather than removed because the brief lists it, and having the declaration means
-adding the transport later is a code change rather than a manifest change. See
-`LIMITATIONS.md` — a declared-but-unused permission is a reviewer question, so it is answered
-here rather than left to be discovered.
+**The four microphone permissions are in the release manifest, and that changed when the speech
+engine became real.** They used to live only in `app/src/debug/AndroidManifest.xml`, on the
+reasoning that a release build contained no working recogniser — `NeuralEngineFactory.USE_REAL_NEURAL`
+was a `const val false` and the engine was a stub — so there was no code path that could reach a
+microphone and no reason to ship an install-time microphone prompt for a feature that did not
+exist.
+
+That reasoning was correct then and is wrong now. Whisper decodes on device and the voice button
+calls it, so the release build **does** have a live path to the microphone and the permissions
+belong in the main manifest. Declaring them anywhere else would mean shipping an APK whose
+shipped feature cannot work.
+
+The consequence is stated rather than minimised: a release install of this app shows a
+microphone permission prompt, and the user can see the microphone declaration in the store
+listing. What the prompt does *not* mean is that audio can leave the device — there is no
+`INTERNET`, no analytics SDK and no crash reporter, and the audio buffer is discarded after the
+decode.
+
+A debug build declares one more entry: `INTERNET`, which the release manifest omits on purpose.
+That is 14 in debug, and the asymmetry is the same mechanism `check_offline.sh` relies on for
+`INTERNET` — see §1.1.
+
+`NEARBY_WIFI_DEVICES` is declared but unused: Wi-Fi Direct has no discovery and no UI entry
+point, so it cannot be reached. It is declared rather than removed because the brief lists it,
+and having the declaration means adding discovery later is a code change rather than a manifest
+change. See `LIMITATIONS.md` — a declared-but-unused permission is a reviewer question, so it is
+answered here rather than left to be discovered.
 
 **`ACCESS_FINE_LOCATION` is requested on API ≤ 30 and never above.** On API 31+ Bluetooth
 permissions stand alone and location is not requested at all. A user on a modern phone is never
 shown a location prompt by this app.
+
+**What the microphone is and is not used for.** Audio is captured as 16 kHz mono PCM16, pushed
+into the Whisper decoder, and dropped. It is not written to disk, not put in the Room database,
+not transmitted over RFCOMM or BLE, and not retained after the transcript exists. There is no
+`MEDIA_SCANNER` or storage permission, so there is no path by which a recording could be written
+to shared storage even if some code tried.
 
 ---
 
@@ -225,8 +270,17 @@ Stated plainly, because a threat model that lists only wins is not a threat mode
 
 ### 6.1 Display names are not identities
 
-A device id is derived from `Settings.Secure.ANDROID_ID` and the display name is typed by the
+A device id is 24 bits of random data minted by the app, and the display name is typed by the
 user. Neither is a cryptographic identity, and a message header carries both in the clear.
+
+The id is deliberately *not* `ANDROID_ID`, the IMEI, the serial, the advertising id or the MAC
+address. It is random data generated by the app and stored in app-private preferences, so
+uninstalling or clearing app data removes it and it cannot be correlated with the handset.
+An earlier revision stored it in `Settings.Secure`, which is writable only with
+`WRITE_SECURE_SETTINGS`; every write silently failed and the app minted a new id on each
+launch, which orphaned every stored message. That is recorded in `DeviceIdentity`'s KDoc
+because "we picked a system settings namespace because it is more private" reads as sound
+reasoning and was wrong in exactly the way that mattered.
 
 A peer on a bonded link can therefore claim any display name. What a receiver *can* rely on is
 that the message came over a link with that MAC address, encrypted with a key that was never
@@ -246,14 +300,72 @@ unilaterally.
 
 ---
 
-## 7. Checklist for a change
+## 7. The one third-party dependency, and what it costs
+
+This project was built on the claim that every runtime dependency is AndroidX or Jetpack. **That
+is no longer true**, and the exception is named here rather than left to be discovered by whoever
+runs `:app:dependencies`.
+
+| | |
+|---|---|
+| artifact | `com.bihe0832.android:lib-sherpa-onnx:6.25.21` |
+| what it is | an Android repackaging of upstream [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) |
+| licence | Apache-2.0 |
+| why it is here | offline speech-to-text for ten languages |
+| native code | `libsherpa-onnx-jni.so` + `libonnxruntime.so`, arm64-v8a and armeabi-v7a |
+| native bytes | 34,655,644 |
+| permissions it merges | **none** — verified against the built release APK |
+| network calls | none, and none reachable — the release APK has no `INTERNET` |
+
+**Why this library and not another.** Every other offline recogniser considered was either
+closed-source, a Play Services dependency, or could not cover the full language list. Kotlin
+Speech Recognizer, Android's own `SpeechRecognizer`, Picovoice, and Vosk were all rejected: the
+first two are network or Play-Services bound, and neither Vosk nor Picovoice ships the ten
+Indian languages this app offers, Kannada and Malayalam included. sherpa-onnx runs Whisper
+int8 on the CPU with no Play Services. That is a genuine engineering trade and this is where it
+is recorded.
+
+**What it actually costs, stated without softening:**
+
+- **It is third-party native code running in the app's process.** Every other line of code in this
+  repository is in this repository and reviewable line by line. 34,655,644 bytes of the shipped
+  artifact is not. A reviewer cannot read the code that decodes the user's voice.
+- **It is a repackaging, not upstream.** `com.bihe0832.android` is a third party re-hosting
+  sherpa-onnx. Trust in it is trust in that publisher's build as much as in upstream's. The
+  native library was not rebuilt from source here and its provenance was not independently
+  verified.
+- **It pulls in ONNX Runtime.** Two large native libraries, two more codebases in the trust
+  boundary, for one feature.
+- **It is 99.3% of the install.** See `PERFORMANCE.md` §3.1 for what that means on a handset
+  with little free space.
+
+**What was verified rather than assumed:**
+
+- The release APK contains **0** `INTERNET` entries after this dependency was added.
+- The 4 instrumented tests run the real library on a real handset and produce a real transcript.
+- The model files it loads are **SHA-256 verified** by `ModelStore` before the recogniser is built,
+  so a corrupted or substituted download is discarded rather than executed.
+
+**What is not verified:** the provenance of the prebuilt `.so`, and the licence text of the ONNX
+models as shipped. The Whisper weights are MIT; that has not been re-checked against the upstream
+repository for this specific quantised export.
+
+The alternative — writing a Whisper runtime from scratch, or shipping a 6-language app — was
+judged worse than naming the dependency. A reviewer who disagrees now has the trade-off in front
+of them.
+
+---
+
+## 8. Checklist for a change
 
 Before merging anything that touches crypto, storage or the manifest:
 
 1. `bash scripts/check_offline.sh` — must exit 0. **Not exit 2.**
 2. `./gradlew testDebugUnitTest` — must be green.
 3. `aapt dump permissions app-release.apk` — no `INTERNET`, no unexpected additions.
-4. If a dependency changed: re-read §1.2. A new library is the most likely way to break the
-   central guarantee.
+4. If a dependency changed: re-read §1.2 and §7. A new library is the most likely way to break
+   the central guarantee, and it is how a native-code trust boundary gets added by accident.
 5. If a log statement was added: confirm it cannot receive plaintext, ciphertext or key material.
 6. If an id field changed width: read `NETWORK_PROTOCOL.md` §2.1 first.
+7. If a model file changed: update the SHA-256 in `ModelStore` and in the models-directory
+   README next to it together, or the app will discard the model as corrupt at runtime.

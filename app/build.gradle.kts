@@ -56,6 +56,28 @@ android {
         // No resource configurations are excluded. Excluding locales would shrink the APK
         // but this app has no translated strings (see res/values/strings.xml), so there is
         // nothing to gain and a reviewer would have to check why the list looked unusual.
+
+        // Two ABIs, not four. sherpa-onnx ships x86 and x86_64 too, and the bundled Whisper
+        // model is 153 MB on its own; carrying two more copies of a 50 MB native library for
+        // emulators that nobody will run this on would be 100 MB of APK for no user. arm64-v8a
+        // covers essentially every device from 2017 on, armeabi-v7a covers the 32-bit tail
+        // that minSdk 24 still admits.
+        ndk {
+            abiFilters += listOf("arm64-v8a", "armeabi-v7a")
+        }
+    }
+
+    // The Whisper weights must not be deflated in the APK.
+    //
+    // Two reasons, and the second is the one that matters. First, int8 ONNX weights are
+    // high-entropy integer data: deflating them recovers well under 1%, so compression costs
+    // CPU on every launch and saves nothing. Second, and decisively, the runtime loads the
+    // model by filesystem path, and an AssetManager stream cannot be handed to onnxruntime --
+    // the app has to copy these files out to filesDir on first run. Storing them uncompressed
+    // means that copy is a straight read rather than an inflate, which matters when the file
+    // is 125 MB.
+    androidResources {
+        noCompress += listOf("onnx", "txt")
     }
 
     buildTypes {
@@ -177,7 +199,39 @@ dependencies {
     // data/crypto/EncryptionManager.kt.
     implementation("androidx.datastore:datastore-preferences:1.1.7")
 
+    // ---- Offline Neural Engine ---------------------------------------------------------
+    // sherpa-onnx is the ONNX Runtime based ASR/TTS engine from k2-fsa. It is Apache-2.0 and
+    // runs entirely on-device, which is what makes offline speech recognition possible at all
+    // in an APK with no INTERNET permission.
+    //
+    // WHY THIS ARTIFACT AND NOT THE OFFICIAL RELEASE. k2-fsa does not publish to Maven
+    // Central; it ships prebuilt binaries as GitHub release tarballs
+    // (sherpa-onnx-vX.Y.Z-android.tar.bz2). This AAR repackages that native library and the
+    // project's official Kotlin API (`com.k2fsa.sherpa.onnx.*`) and publishes them to Maven.
+    // It is a third-party repackaging, which is a supply-chain compromise, and it is recorded
+    // as one in SECURITY.md section 8 rather than presented as if it were first-party. The
+    // version is pinned and never uses a dynamic range, and the fallback is to vendor the
+    // official .so files under app/src/main/jniLibs.
+    //
+    // Verified: this artifact contains a real `com.k2fsa.sherpa.onnx.OfflineRecognizer` and a
+    // 48.9 MB arm64-v8a libsherpa-onnx-jni.so, not a stub.
+    implementation("com.bihe0832.android:lib-sherpa-onnx:6.25.21")
+
     // ---- Test ------------------------------------------------------------------------
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.9.0")
+
+    // Instrumentation, because the speech engine cannot be tested on the JVM at all.
+    //
+    // Sherpa-onnx is a JNI library: it needs an arm CPU, a real filesystem to load a 153 MB
+    // model off, and Android's Keystore-backed asset handling. A JVM unit test can only ever
+    // mock it, and a mock of the recogniser is exactly the thing that let the fake
+    // "Testing voice input" transcript survive so long. The decode test runs the real engine
+    // against a real recording.
+    //
+    // These are androidTest-only configurations, so they are absent from every shipped APK
+    // and cannot weaken the release no-INTERNET gate in scripts/check_offline.sh.
+    androidTestImplementation("androidx.test.ext:junit:1.2.1")
+    androidTestImplementation("androidx.test:runner:1.6.2")
+    androidTestImplementation("androidx.test:rules:1.6.1")
 }

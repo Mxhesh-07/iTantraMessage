@@ -85,7 +85,8 @@ PowerShell's `Select-String` mangles the long `e:` lines. De-wrap with:
 ### 2.2 Gates that must pass
 
 ```powershell
-.\gradlew.bat testDebugUnitTest    # exit 0, 95 tests
+.\gradlew.bat testDebugUnitTest    # exit 0, 198 tests (396 executions: debug + release)
+.\gradlew.bat connectedDebugAndroidTest   # exit 0, 4 instrumented tests, needs a real device
 bash scripts/check_offline.sh      # exit 0  -- NOT exit 2
 python scripts/check_docs.py       # exit 0
 ```
@@ -185,12 +186,22 @@ release {
 }
 ```
 
-Measured 2026-10-01: **1.28 MB** release, 17.74 MB debug. The ~14× difference is R8 plus
-resource shrinking; debug is unminified with full tooling.
+Measured 2026-10-05: **196,624,703 bytes** release, 214,334,743 debug. The ~1.09× difference is
+R8 plus resource shrinking; debug is unminified with full tooling.
+
+The size is dominated by a bundled asset, not by code: `assets/models/whisper-base/` is
+160,609,290 bytes and the two native libraries that run it are 34,655,644, together 99.3% of the
+artifact. The application's own code and resources come to roughly 1.36 MB. See
+`PERFORMANCE.md` §3.1 for the full composition and for what it costs to install.
 
 Release is signed with the **debug** key. That is a deliberate placeholder for a demo build
 and must be replaced with a real key before any distribution — stated here because a debug-signed
 release APK is otherwise easy to mistake for a shippable one.
+
+`abiFilters` is restricted to `arm64-v8a` and `armeabi-v7a`. arm64 covers essentially every
+device from 2017 on; the 32-bit ABI covers the tail that minSdk 24 still admits. Shipping both
+adds 13,705,540 bytes that most users never execute, and it was kept because a messaging app
+that cannot run on a cheap 32-bit phone has failed its own brief.
 
 ### 3.5 Dependency versions come from the local cache
 
@@ -198,6 +209,17 @@ Every version was chosen from what is already in `~/.gradle/caches`, so the buil
 with no network. AGP 8.13.1 · Kotlin 2.2.20 · KSP 2.2.20-2.0.4 · Gradle 8.14 · compileSdk 36
 · minSdk 24 · Compose BOM 2025.06.01 · Room 2.7.2 · core-ktx 1.16.0 · activity-compose 1.10.1
 · lifecycle 2.9.1 · coroutines 1.9.0 · navigation-compose 2.9.0.
+
+One dependency is not from that cache and is worth naming on its own:
+
+- `com.bihe0832.android:lib-sherpa-onnx:6.25.21` — an Android repackaging of the upstream
+  [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) JNI library, Apache-2.0. It is the
+  **only third-party runtime dependency** in this project, added for offline speech-to-text
+  because it is the only offline engine found that covers all ten languages here, Kannada and
+  Malayalam included. It ships `libsherpa-onnx-jni.so` and depends on `libonnxruntime.so` for
+  arm64-v8a and armeabi-v7a: 34,655,644 bytes of native code in total. What that means for
+  supply chain and for the reviewer's ability to audit this app is written up in `SECURITY.md`
+  §7 and §8 rather than buried here.
 
 The trade: **upgrading any dependency requires a network fetch first.** That is the cost of a
 build that works on a machine with no connectivity, which is the condition this project is
@@ -239,7 +261,7 @@ app/src/main/java/in/isro/sih26173/itantramessage/
   data/
     crypto/EncryptionManager   Keystore AES-GCM, generations in the alias
     database/                  Room: MessageEntity, MessageDao, AppDatabase
-    device/DeviceIdentity      IT-%06X from Settings.Secure
+    device/DeviceIdentity      IT-%06X, 24 random bits in app-private prefs
     nearby/                    NearbyManager, ByteLink+Reassembler, RfcommTransport, BleGattTransport
   domain/
     model/                     Envelope, EnvelopeCodec, ConversationId
@@ -280,14 +302,25 @@ correctly.
 
 ## 6. Current build state
 
-Measured 2026-10-01, version 0.1.0:
+Measured 2026-10-05, version 0.1.0:
 
 | | |
 |---|---|
-| `assembleRelease` | exit 0, 1.28 MB |
-| `assembleDebug` | exit 0, 17.74 MB |
-| `testDebugUnitTest` | exit 0, **95 tests**, 0 failures |
+| `assembleRelease` | exit 0, 196,624,703 bytes |
+| `assembleDebug` | exit 0, 214,334,743 bytes |
+| `assembleDebugAndroidTest` | exit 0, 7,587,766 bytes |
+| `testDebugUnitTest` | exit 0, **198 tests**, 0 failures |
+| `testReleaseUnitTest` | exit 0, **198 tests**, 0 failures |
+| `connectedDebugAndroidTest` | exit 0, **4 instrumented tests** — on a realme RMX2020, API 30 |
 | `check_offline.sh` | exit 0 — release clean, debug positive |
+| `check_docs.py` | exit 0 |
 | `targetSdk` / `minSdk` | 36 / 24 |
+| release permissions | 13 declared, **0** `INTERNET` |
+| debug permissions | 14 declared, 1 `INTERNET` (the negative control) |
 
 **No two-device run has been performed.** See `LIMITATIONS.md` §3.
+
+The instrumented tests are the only ones that need a device and the only ones that exercise the
+speech model. They are `androidx.test` rather than JVM tests on purpose: sherpa-onnx is a JNI
+library, and a JVM test that mocked it would have passed against a stub returning canned text —
+which is precisely the bug this project spent most of its history concealing. See `TESTING.md` §4.6.

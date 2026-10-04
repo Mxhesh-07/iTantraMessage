@@ -68,6 +68,16 @@
     -->
     <uses-permission android:name="android.permission.NEARBY_WIFI_DEVICES"
         android:maxSdkVersion="32" />
+    <!--
+      Microphone permissions are declared here, in the main manifest, because speech
+      recognition is now real. NeuralEngineFactory resolves to the bundled sherpa-onnx
+      Whisper engine, so a release install does hold a working recogniser and these are
+      permissions the app actually exercises. See SECURITY.md section 5.
+    -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.VIBRATE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
 
     <!--
       Bluetooth hardware is required, not merely used. required="true" means the app is

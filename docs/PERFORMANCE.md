@@ -1,10 +1,11 @@
 # PERFORMANCE.md
 
-**No performance figure in this document is measured. Every one is `NOT MEASURED`.**
+**Almost nothing in this document is measured. Everything that is not measured says so, and
+says `NOT MEASURED` rather than carrying an estimate.**
 
-That is the whole document. The design decisions below are the ones made *for* performance,
-with the reasoning recorded so a later measurement can confirm or contradict them. Inventing
-numbers would make this file worse than an empty one.
+The exceptions are the APK sizes and the offline speech-to-text decode, which *were* measured on
+a real handset and are recorded below with the hardware and the command that produced them.
+Inventing the rest would make this file worse than an empty one.
 
 ---
 
@@ -14,21 +15,37 @@ numbers would make this file worse than an empty one.
 |---|---|
 | cold start | **NOT MEASURED** |
 | warm start | **NOT MEASURED** |
-| APK size (release) | **1.28 MB** — measured |
-| APK size (debug) | **17.74 MB** — measured |
+| APK size (release) | **196,624,703 bytes** — measured (`ls` on `app-release.apk`) |
+| APK size (debug) | **214,334,743 bytes** — measured (`ls` on `app-debug.apk`) |
+| APK size (androidTest) | **7,587,766 bytes** — measured |
+| STT decode, 11.00 s of speech | **5,151 ms** — measured, realme RMX2020, real-time factor ≈0.47× |
+| STT peak process RSS | **624 MB** — measured, but see the caveat below |
 | send-to-visible latency | **NOT MEASURED** |
 | decrypt-and-display latency | **NOT MEASURED** |
 | scroll frame time, 100 messages | **NOT MEASURED** |
 | scroll frame time, 1000 messages | **NOT MEASURED** |
-| memory footprint | **NOT MEASURED** |
+| memory footprint of the UI | **NOT MEASURED** |
 | idle battery, 24 h backgrounded | **NOT MEASURED** |
 | radio duty cycle while idle | **NOT MEASURED** |
+| STT word error rate, per language | **NOT MEASURED** |
+| speech model extraction time, first run | **NOT MEASURED** |
+| model load-to-first-result latency | **NOT MEASURED** |
 
-Two rows are measured because they are properties of the build output rather than of runtime,
-and they were produced by `ls` on a built artifact.
+**The RSS figure needs its caveat read with it.** 624 MB was read from the *instrumented test*
+process, which contains ART, the JUnit runner and the test's own buffers alongside the
+recogniser, so it **overstates** what the app itself costs. For scale: the same process sat at
+179 MB while cycling all ten languages and fell to 105 MB after release, which is the part of
+the figure that is attributable to the engine. The app's own steady-state footprint in the UI
+is **NOT MEASURED**.
 
-**Why nothing runtime has been measured:** it requires two paired handsets and a low-end
-device, and neither run has happened. See `TESTING.md` §7.
+Both size figures and the decode figures were refreshed on 2026-10-05 from
+`app/build/outputs/apk/` and from logcat during `WhisperDecodeInstrumentedTest`. The sizes
+grew by roughly 150× when the Whisper base int8 model was bundled into the APK — every size
+number in this repository predating that change was wrong, and a stale number is the same
+class of error as a fabricated one.
+
+**Why nothing else runtime has been measured:** it requires two paired handsets, and a message
+has not yet been delivered end to end. See `TESTING.md` §7.
 
 ---
 
@@ -51,21 +68,51 @@ Two consequences:
 
 ## 3. Decisions made for performance, and their rationale
 
-### 3.1 Release APK is 1.28 MB
+### 3.1 The release APK is 196,624,703 bytes, and 82% of it is the speech model
 
-Measured. R8 plus resource shrinking account for the ~14× difference from the 17.74 MB debug
-build.
+Measured, and the composition is worth stating plainly because it reverses the previous
+trade-off in this project: until Whisper was bundled the release artifact was 1,364,843 bytes
+and size was a design constraint worth optimising. It is now dominated by a file that cannot be
+optimised away without losing offline dictation.
 
-Contributors, in order of size:
+| contributor | bytes | share |
+|---|---:|---:|
+| `assets/models/whisper-base/base-decoder.int8.onnx` | 130,672,026 | 66.5% |
+| `assets/models/whisper-base/base-encoder.int8.onnx` | 29,120,534 | 14.8% |
+| native libraries, both ABIs (`libsherpa-onnx-jni`, `libonnxruntime`, 2 AndroidX) | 34,655,644 | 17.6% |
+| `assets/models/whisper-base/base-tokens.txt` | 816,730 | 0.4% |
+| everything else — classes, resources, Room schema, Compose | ~1,359,769 | 0.7% |
 
-- **No Play Services.** `play-services-nearby` alone would have been a large fraction of this.
-  Rejected on size and API-30 risk — see `LIMITATIONS.md` §1.3.
+So roughly **99.3%** of the artifact is the model plus the two native libraries that run it, and
+the application's own code and resources are about 1.36 MB — the same size the whole APK used to
+be. Nothing about the app grew. One dependency did.
+
+What this means for a low-end handset is a genuine cost, stated rather than minimised:
+
+- **Install needs real free space.** Measured on the test device, installing the 214 MB debug
+  build required roughly **1.1 GB free** at the time of the `PackageInstaller` commit — about
+  5× the APK size. It failed at 1.01 GB free and succeeded at 1.22 GB. On a phone at 96% full
+  this is the difference between "works" and `INSTALL_FAILED_INSUFFICIENT_STORAGE`.
+- **First use costs 153 MB of writes.** The model is extracted to `filesDir` on first dictation,
+  not at install, so a user who never taps the microphone never pays it.
+- **The model is stored uncompressed.** `androidResources.noCompress += "onnx"` lets it be
+  memory-mapped rather than inflated into RAM, which is why the APK is ~187 MB larger than the
+  compressed size and why the model is the top entry under "app data" rather than under
+  "downloaded".
+
+The remaining size decisions, all still true and now a rounding error against the model:
+
+- **No Play Services.** `play-services-nearby` alone would have been a large fraction of the old
+  1.36 MB. Rejected on size and API-30 risk — see `LIMITATIONS.md` §1.3.
 - **No `appcompat`.** Pure Compose with one Activity. Adding it for a MaterialComponents theme
   would pull the entire Views Material library.
 - **No image assets.** The launcher icon is a vector. No bitmaps, no photo attachments, no
   bundled fonts.
 - **Compose BOM** rather than individual artifact pins, so the compiler, runtime and BOM stay
   consistent.
+- **int8 quantisation, not float.** The int8 encoder/decoder pair is 160,609,290 bytes against
+  roughly 291 MB for the float32 pair — a 1.8× saving, bought with some accuracy loss that this
+  project has **NOT MEASURED**.
 
 ### 3.2 Small screen first, not scaled down
 

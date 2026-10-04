@@ -1,11 +1,15 @@
 # iTantra Message
 
+[![gates](https://github.com/Mxhesh-07/iTantraMessage/actions/workflows/gates.yml/badge.svg)](https://github.com/Mxhesh-07/iTantraMessage/actions/workflows/gates.yml)
+
 Offline-first peer-to-peer text messaging over raw Bluetooth. No server, no account, no phone
 number, and **no internet permission in the release build** — the kernel refuses socket
 creation for a process without it, so the app cannot open a network connection even if some
 merged-in library asked it to.
 
 Two devices, a few metres apart, Bluetooth on. That is the whole deployment.
+
+Apache-2.0 licensed. Copyright 2026 iTantra Message contributors.
 
 ---
 
@@ -14,15 +18,43 @@ Two devices, a few metres apart, Bluetooth on. That is the whole deployment.
 | | |
 |---|---|
 | version | 0.1.0 |
-| unit tests | **95 passing**, 0 failures |
-| release APK | 1.28 MB, no `INTERNET` |
+| unit tests | **396 passing**, 0 failures (198 methods × debug + release) |
+| instrumented tests | **4 passing** on a real handset — real Whisper decode of real speech, all 10 languages |
+| release APK | 196,624,703 bytes, no `INTERNET` |
 | offline gate | passing, with a live negative control |
-| **two-device run** | **not done** |
+| two-device run | **partial** — RFCOMM link and the identity handshake are confirmed working across two real handsets. **A message has not yet been delivered end to end.** |
 
-The last row is the important one. Everything in this repository is verified by a command
-whose output is reproducible. Nothing has been observed on two handsets exchanging a message,
-so every runtime figure is written `NOT MEASURED` rather than estimated. See
-`docs/LIMITATIONS.md` §3 for the full list.
+That last row is the important one, and the distinction in it is deliberate. What has been
+observed: both phones install and declare no `INTERNET`, both accept an incoming RFCOMM socket,
+and the identification handshake completes across the link. What has not: a message composed on
+one handset and read on the other. Until that happens, every runtime figure — latency, battery,
+delivery success — is written `NOT MEASURED` rather than estimated. See `docs/LIMITATIONS.md` §3
+for the full list and `docs/TESTING.md` §7 for what was observed.
+
+Everything else in this repository is verified by a command whose output is reproducible, and
+the gates run on every push.
+
+### Speech-to-text is measured, not asserted
+
+Offline dictation uses **Whisper base (int8)** through [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx),
+which is the only open-source offline engine found that covers all ten languages in this app,
+Kannada and Malayalam included. The model ships inside the APK and is extracted and SHA-256
+verified on first use.
+
+On a realme RMX2020 (Android 11, 2.8 GB RAM) `app/src/androidTest/.../WhisperDecodeInstrumentedTest`
+passes all four tests, and the decode test produces an actual transcript:
+
+```
+pushed 176000 samples (11.00 s)
+DECODED in 5151ms: [And so my fellow Americans asked not what your country can do for you,
+                    ask what you can do for your country.]
+matched 9/9 expected words
+```
+
+That is the microphone path, the decoder and the recogniser wrapper, exercised against a
+recording of a human voice. The transcript is in the log because it was produced by the model,
+not by the test. **Word error rate for the nine Indian languages is `NOT MEASURED`** — see
+`docs/LIMITATIONS.md` §3.
 
 ---
 
@@ -63,6 +95,9 @@ offline gate requires the debug build to *contain* the permission.
   would be racy.
 - Device identity is a locally-derived `IT-8F3A21` plus a display name. No account, no
   number, nothing to register.
+- **Offline dictation** with Whisper base (int8), bundled in the APK and decoded on device.
+  No audio leaves the phone and there is no network permission to send it over. The transcript
+  lands in the composer as a draft to review, never as an automatic send.
 
 ## What it does not
 
@@ -84,12 +119,18 @@ means *this phone handed the bytes to Bluetooth*, not *the other phone received 
 | `docs/ERROR_HANDLING.md` | failure behaviour, retry, logging |
 | `docs/LIMITATIONS.md` | what is missing, and the `NOT MEASURED` list |
 | `docs/PERFORMANCE.md` | measured versus unmeasured, and how to measure |
-| `docs/TESTING.md` | the 95 tests, what they protect, what is untested |
+| `docs/TESTING.md` | the test suites, what they protect, what is untested |
 | `docs/COLOR.md` | palette and computed contrast ratios |
 | `docs/BUILD.md` | toolchain, versions, and why each is what it is |
+| `docs/TECH_STACK.md` | every technology, and crucially which are actually running |
+| `docs/PRESENTATION.md` | project pack: overview, tech stack, DFD, CFD, feasibility, impact, references |
 
 Claims in the docs are marked **[ENFORCED]** (a command verifies it) or **[BY DESIGN]** (true
 of the code, but nothing checks it). That distinction is the point of the two markers.
+
+Read `docs/TECH_STACK.md` before trusting any feature list, including the one above. It carries
+a status column, because this project has accumulated code that is written but not reachable,
+and a stack document that cannot tell the two apart is marketing.
 
 ---
 
@@ -98,9 +139,16 @@ of the code, but nothing checks it). That distinction is the point of the two ma
 ```
 ui/            Compose screens + ViewModels, one Activity
 domain/        Envelope, EnvelopeCodec, ConversationId, MessageRepository
-data/nearby/   NearbyManager, ByteLink + Reassembler, RfcommTransport, BleGattTransport
-data/crypto/   EncryptionManager — Keystore AES-GCM
+domain/speech/ SpeechRecognizer + TextToSpeechEngine interfaces, Language (10 locales)
+domain/audio/  AudioFormat (16 kHz mono PCM 16-bit), EnergyVad
+data/nearby/   NearbyManager, ByteLink + Reassembler, RfcommTransport, BleGattTransport,
+               WifiDirectTransport
+data/crypto/   EncryptionManager (at rest), SessionCrypto (on the wire), IdentityKey,
+               SessionKeys, Hkdf
 data/database/ Room entities, DAO, migrations
+data/device/   DeviceIdentity (random 24-bit id), PeerIdentity registry
+core/          NeuralEngine abstraction + factory, SherpaOnnxNeuralEngine (Whisper via
+               sherpa-onnx), ModelStore (extract + SHA-256), packet layer, emergency alerts
 ```
 
 Two framing layers, kept apart on purpose:

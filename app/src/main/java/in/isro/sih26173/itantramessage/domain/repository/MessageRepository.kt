@@ -33,7 +33,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.sync.Mutex
+
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.util.UUID
@@ -104,7 +104,7 @@ class MessageRepository(
     /**
      * The key agreed with [peerDeviceId], or null when there is no keyed peer.
      *
-     * Volatile rather than held under [linkMutex]: it is written by the receive loop and read
+     * Volatile rather than held under [linkLock]: it is written by the receive loop and read
      * by the pump, which is a memory-visibility question and not a mutual-exclusion one.
      * Taking the mutex would also mean holding it across a Keystore operation, and [attach]
      * needs that lock.
@@ -159,27 +159,74 @@ class MessageRepository(
     }
 
     /**
-     * The current link, or null when disconnected.
+     * One live socket, with the receive machinery that belongs to it.
      *
-     * Guarded by [linkMutex] because [attach], [detach] and the retry loop all touch it
-     * from different coroutines. A plain `var` here would let the retry loop write to a
-     * link the user has already disconnected from, which fails silently and leaves a
-     * message stuck in SENDING until the next retry.
-     */
-    @Volatile private var link: ByteLink? = null
-    private val linkMutex = Mutex()
-
-    private var pumpJob: Job? = null
-    private var receiveJob: Job? = null
+     * Per-link rather than fields on the repository, and that is the fix for a defect this was
+     * rewritten for. The receive loop, the reassembler and the link itself used to be single
+     * instance fields, so a second connection replaced them and the first connection's partially
+     * received frame could be prepended to the second's first frame.
+ *
+     * [open] is read by the send path to avoid writing to a socket whose far end is gone, and
+ * cleared by the receive loop when it ends, so a dead link leaves the candidate list by itself
+ * rather than by a timer or by being written to and failing.
+ */
+private class LiveLink(val id: Int, val link: ByteLink) {
 
     /**
-     * The reassembler for the current link.
-     *
-     * Per-link, not a field reused across links: a partially received frame from a
-     * dropped connection would otherwise be prepended to the first frame of the next one,
-     * producing a corrupt message whose cause is untraceable.
+     * Per link, not shared: a partially received frame from a dropped connection would
+     * otherwise be prepended to the first frame of the next one, producing a corrupt message
+     * whose cause is untraceable.
      */
-    private var reassembler = Reassembler()
+    var reassembler = Reassembler()
+
+    var job: Job? = null
+
+    @Volatile var open = true
+}
+
+/**
+     * The current link, or null when disconnected.
+     *
+     * Guarded by [linkLock] because [attach], [detach] and the receive loops all touch it from
+     * different coroutines. A plain `var` here would let the retry loop write to a link the user
+     * has already disconnected from, which fails silently and leaves a message stuck in SENDING
+     * until the next retry.
+     */
+    @Volatile private var primary: LiveLink? = null
+
+    /**
+     * Superseded links that are still usable.
+     *
+     * This list exists because of a measured failure on two real handsets. Both phones run a
+     * server *and* can dial, so if both are connected at the same time there are two sockets:
+     * one the user opened, one the other phone opened. `attach` used to close the link it
+     * replaced, and because each phone replaced the link the *other* one was using, both ended
+     * up holding a socket whose far end the peer had already closed. Both phones showed a
+     * connected peer with an agreed key, and neither could send: the symptom the user reported
+     * as "still can't text".
+     *
+     * So a new link no longer supersedes a live one. Both are kept, each with its own receive
+     * loop, and [deliverOnAnyLink] tries them in order. Two sockets cost more than one; the
+     * alternative cost a working app.
+     *
+     * Bounded by [MAX_KEPT_LINKS], because this is a list that grows with however many times
+     * the peer re-dials, and an unbounded list is a socket leak with extra steps.
+     */
+    private val kept = mutableListOf<LiveLink>()
+
+    /**
+     * Guards [primary] and [kept].
+     *
+     * A plain monitor rather than the coroutine [Mutex] this used to use. The work inside is
+     * list bookkeeping and no suspension, and the receive loop has to be able to drop its own
+     * link from a `finally` block without suspending -- which a Mutex cannot do without
+     * `tryLock` and a second code path. A monitor is the simpler correct choice here.
+     */
+    private val linkLock = Any()
+
+    private var nextLinkId = 0
+
+    private var pumpJob: Job? = null
 
     // ---- reads -----------------------------------------------------------------------
 
@@ -255,30 +302,114 @@ class MessageRepository(
      * sockets to the same radio is exactly the situation Android will refuse to schedule.
      */
     suspend fun attach(newLink: ByteLink) {
-        linkMutex.withLock {
-            link?.close()
-            reassembler = Reassembler()
-            link = newLink
-            // Every one of these belongs to the peer that announced it, and a new link is a new
-            // unidentified peer until its hello arrives. Keeping any of them would mean deriving
-            // this link's key from the previous peer's material.
-            clearHandshake()
+        var live: LiveLink
+        var isPrimary: Boolean
+
+        synchronized(linkLock) {
+            live = LiveLink(nextLinkId++, newLink)
+            val current = primary
+
+            if (current == null || !current.open) {
+                // Nothing usable to keep, so this link becomes the one everything keys off. The
+                // old primary, if any, was already dead, so it is retired rather than closed --
+                // its socket is gone and closing it again would be noise at best.
+                if (current != null) retireLocked(current)
+                kept.clear()
+                primary = live
+                isPrimary = true
+                // Every handshake value belongs to the peer that announced it, and a new
+                // primary is an unidentified peer until its hello arrives.
+                clearHandshake()
+            } else {
+                // A second link to the same bonded peer, which is what happens when both phones
+                // are connected at once. The existing primary is deliberately left alone: it is
+                // the one the peer is more likely to still have open, and replacing it is the
+                // defect described on [kept].
+                if (kept.size >= MAX_KEPT_LINKS) retireLocked(kept.removeAt(0))
+                kept.add(live)
+                isPrimary = false
+                Log.i(
+                    TAG,
+                    "link ${live.id} is additional; keeping link ${current.id} as the primary",
+                )
+            }
         }
 
-        startReceiving(newLink)
-        announceSelf(newLink)
-        requestPump()
+        startReceiving(live)
+
+        if (isPrimary) {
+            announceSelf(live.link)
+            requestPump()
+        } else {
+            // Deliberately not announcing on an additional link. The peer is already keyed from
+            // the primary, and a second HELLO would restart the handshake and derive a *second*
+            // session key -- which is exactly what happened on the hardware run that motivated
+            // this change. The session key belongs to the conversation, not to the socket, so a
+            // message sent here is readable by a peer already keyed from the other one.
+            Log.d(TAG, "not re-announcing on additional link ${live.id}")
+        }
+    }
+
+    /**
+     * Live links to try, best first.
+     *
+     * A snapshot rather than the list itself: the caller iterates outside the monitor, and
+     * [dropLink] removes entries from the receive loop's own coroutine.
+     */
+    private fun liveLinks(): List<LiveLink> = synchronized(linkLock) {
+        buildList {
+            primary?.let { if (it.open) add(it) }
+            for (live in kept) if (live.open) add(live)
+        }
+    }
+
+    /**
+     * Take a link out of service: stop its receive loop and close the socket.
+     *
+     * Callers must hold [linkLock]. Marking it closed *first* means a concurrent
+     * [deliverOnAnyLink] snapshot cannot pick it up between the two steps.
+     */
+    private fun retireLocked(live: LiveLink) {
+        live.open = false
+        live.job?.cancel()
+        live.job = null
+        runCatching { live.link.close() }
+    }
+
+    /**
+     * A link's receive loop ended. Remove it, and let the send path stop offering it.
+     *
+     * This is what keeps a dead socket from being written to: without it, the dead link stays at
+     * the front of [liveLinks] and every send fails on it until the user reconnects.
+     */
+    private fun dropLink(live: LiveLink) {
+        val wasPrimary = synchronized(linkLock) {
+            val was = primary === live
+            if (was) primary = null
+            kept.remove(live)
+            was
+        }
+        live.open = false
+        Log.i(
+            TAG,
+            if (wasPrimary) "link ${live.id} closed; no primary link remains"
+            else "link ${live.id} closed",
+        )
+        // The next attach pumps, and a link that is still alive in [kept] can carry the queue
+        // in the meantime, so the pump is asked to run rather than being left idle.
+        if (liveLinks().isNotEmpty()) requestPump()
     }
 
     /**
      * Drop everything the handshake accumulated, wiping the bytes that are key material.
      *
-     * Called from [attach] and [detach] under [linkMutex], so it is not synchronised itself.
+     * Called when a new primary link appears, so it is not always under [linkLock] -- the
+     * handshake fields are all @Volatile and none of them is a link.
      *
      * The wipe is the point of the method rather than a nicety. [ourContribution] and
-     * [theirContribution] are the two halves of the session key input; leaving them on a `ByteArray`
-     * that the collector will deal with eventually is the "do not keep the secret" instruction
-     * that was not actually followed.
+     * [theirContribution] are the two halves of the session key input; leaving them on a
+     * `ByteArray` that the collector will deal with eventually is the "do not keep the secret"
+     * instruction that was not actually followed.
      */
     private fun clearHandshake() {
         _peerDeviceId.value = null
@@ -382,17 +513,15 @@ class MessageRepository(
 
     /** Detach and stop all link activity. Safe when nothing is attached. */
     suspend fun detach() {
-        val old = linkMutex.withLock {
-            val current = link
-            link = null
-            current
+        synchronized(linkLock) {
+            primary?.let { retireLocked(it) }
+            primary = null
+            kept.forEach { retireLocked(it) }
+            kept.clear()
         }
-        old?.close()
         // Outside the lock deliberately: the handshake fields are all @Volatile and this does
         // not need to be atomic with the link swap, only ordered after it.
         clearHandshake()
-        receiveJob?.cancel()
-        receiveJob = null
         pumpJob?.cancel()
         pumpJob = null
     }
@@ -408,20 +537,26 @@ class MessageRepository(
      * on the same radio can send, and a peer that can crash this app is a denial of
      * service by anyone in range.
      */
-    private fun startReceiving(source: ByteLink) {
-        receiveJob?.cancel()
-        receiveJob = scope.launch {
+    private fun startReceiving(live: LiveLink) {
+        live.job = scope.launch {
             try {
-                source.incoming.collect { chunk ->
-                    for (frame in reassembler.feed(chunk)) {
+                live.link.incoming.collect { chunk ->
+                    for (frame in live.reassembler.feed(chunk)) {
                         acceptFrame(frame)
                     }
                 }
             } catch (t: Throwable) {
                 // A closed channel is the normal end of a link, not a failure to report.
                 if (t !is ClosedReceiveChannelException) {
-                    Log.w(TAG, "receive loop ended: ${t.javaClass.simpleName}")
+                    Log.w(
+                        TAG,
+                        "receive loop for link ${live.id} ended: ${t.javaClass.simpleName}",
+                    )
                 }
+            } finally {
+                // Always, including cancellation, so a link never lingers in the candidate list
+                // after its socket is gone.
+                dropLink(live)
             }
         }
     }
@@ -460,7 +595,21 @@ class MessageRepository(
             return
         }
 
-        val address = link?.peerAddress
+        // Already keyed with this peer, so there is nothing to agree and re-agreeing would be
+        // actively harmful. Both sides generate a fresh contribution per handshake, so a second
+        // HELLO produces a *second* session key: the two phones would then hold different keys
+        // and every message would fail to decrypt. That is not hypothetical -- it is what the
+        // hardware run showed, where a second link sent a second hello and the fingerprint
+        // changed from 5fd094db to b72b72d6 on both phones.
+        //
+        // The peer re-announcing on a second link is legitimate. Re-keying is not.
+        if (session != null && _peerDeviceId.value == announced.deviceId) {
+            Log.i(TAG, "already keyed with ${announced.deviceId}; not re-running the handshake")
+            requestPump()
+            return
+        }
+
+        val address = primary?.link?.peerAddress
         if (address == null) {
             Log.w(TAG, "handshake from ${announced.deviceId} not persisted: peer address unavailable")
         } else {
@@ -473,7 +622,7 @@ class MessageRepository(
         // Now that the peer's key is known, our contribution can be encrypted to it. This is
         // the earliest a contribution can exist, which is why the handshake needs a second
         // frame rather than one larger one.
-        link?.let { sendContribution(it, announced.publicKeyHex) }
+        primary?.link?.let { sendContribution(it, announced.publicKeyHex) }
 
         // The peer's contribution may already be here, if its secret frame somehow preceded
         // its hello. Checking costs one null comparison and removes the assumption.
@@ -741,33 +890,84 @@ class MessageRepository(
      * peer from becoming a permanent battery drain.
      */
     private suspend fun pump() {
-        while (coroutineContextIsActive()) {
-            val current = link ?: return // Nothing to send on; the next attach() pumps.
-            val next = dao.pendingForDelivery().firstOrNull() ?: return // Queue is empty.
+        // Rows already attempted during this pass.
+        //
+        // A backstop, not the mechanism: the state machine is supposed to move every row out
+        // of `pendingForDelivery` within one pass. It did not, for a reason fixed above, and the
+        // symptom was a tight resend loop that hammered the socket until the app was killed.
+        // If a future change reintroduces any row that cannot leave the queue, this bounds the
+        // damage to one attempt per row per pass instead of an unbounded spin.
+        val attempted = mutableSetOf<String>()
 
-            // Not keyed with this peer's peer yet, so the payload cannot be encrypted for the
-            // wire. This returns without touching the row's retry counter, which is the
-            // important part: "not connected yet" is not a failed send, and counting it would
-            // burn a message's whole retry budget during the second or two the handshake
-            // takes. [handleHello] calls [requestPump] when the key lands.
-            val session = sessionFor(next.conversationId)
-            if (session == null) {
-                Log.d(TAG, "holding ${next.messageId}: no agreed key for this conversation")
-                return
+        while (coroutineContextIsActive()) {
+            if (liveLinks().isEmpty()) return // Nothing to send on; the next attach() pumps.
+
+            val next = dao.pendingForDelivery()
+                .firstOrNull { it.messageId !in attempted }
+                ?: return // Nothing new to try; later messages wait for the next pump.
+            attempted.add(next.messageId)
+
+            // Three different reasons a row cannot go out right now, and they need different
+            // handling. Conflating them is how a message sat in the queue forever on hardware:
+            // a message addressed to a peer this device no longer has a conversation with can
+            // never be sent, and holding it "until connected" waits for a connection that will
+            // not come, because it would need that peer, not this one.
+            when (val verdict = sendVerdict(next.conversationId)) {
+                SendVerdict.NO_PEER_YET -> {
+                    // Not connected yet. Returns without touching the row's retry counter,
+                    // because "not connected yet" is not a failed send and counting it would
+                    // burn a message's whole retry budget during the second or two the handshake
+                    // takes. [handleHello] calls [requestPump] when the key lands.
+                    Log.d(TAG, "holding ${next.messageId}: not connected to a peer yet")
+                    return
+                }
+
+                SendVerdict.WRONG_PEER -> {
+                    // A peer is connected, but not the one this message is addressed to. There
+                    // is no route for it and no future where there will be: the conversation is
+                    // keyed on the two device ids, so the message's peer is a device this phone
+                    // is not talking to. Marked FAILED so the queue drains and the user can see
+                    // why, rather than blocking every message behind it indefinitely.
+                    Log.w(TAG, "message ${next.messageId} is for ${next.conversationId}, not the connected peer")
+                    dao.recordFailure(next.messageId, DeliveryStatus.FAILED.name, "no route to that peer")
+                    continue
+                }
+
+                SendVerdict.NO_KEY -> {
+                    // Connected to the right peer, but the handshake has not finished. Same
+                    // reasoning as NO_PEER_YET: this is not a failure.
+                    Log.d(TAG, "holding ${next.messageId}: no agreed key for this conversation")
+                    return
+                }
+
+                SendVerdict.READY -> Unit
             }
 
-            val sent = deliver(current, next, session)
+            val session = sessionFor(next.conversationId)!!
+            val sent = deliverOnAnyLink(next, session)
             if (sent) {
-                transition(next, DeliveryStatus.PENDING, DeliveryStatus.SENT)
+                // [deliverOnAnyLink] has already moved the row to SENDING in the database.
+                // `next` is a stale snapshot and still says PENDING, so the state this
+                // transition must compare against is not readable from it -- [transition]
+                // re-reads the row for exactly this reason.
+                transition(next, DeliveryStatus.SENT)
                 continue // Try the next message immediately.
             }
 
-            // A failure. Count it, and if the budget is gone give up on this row.
-            dao.recordFailure(next.messageId, DeliveryStatus.FAILED.name, "send rejected")
+            // A failure. Count it, and only give up on the row once the budget is gone.
+            //
+            // `recordRetry` rather than `recordFailure`, and the difference is not cosmetic.
+            // Marking the row FAILED on the first rejection makes it terminal, so
+            // `pendingForDelivery` stops returning it and MAX_RETRIES never comes into play --
+            // one refusal ended the retry budget entirely. The row goes back to PENDING
+            // (a legal SENDING -> PENDING transition) so the next pass picks it up.
             if (next.retryCount + 1 >= MAX_RETRIES) {
+                dao.recordFailure(next.messageId, DeliveryStatus.FAILED.name, "send rejected")
                 Log.w(TAG, "message ${next.messageId} exhausted $MAX_RETRIES retries")
                 continue
             }
+
+            dao.recordRetry(next.messageId, "send rejected")
 
             // Backoff before trying again. Without this, a peer that is in range but not
             // accepting writes would be hammered at the retry rate for as long as the app
@@ -777,13 +977,36 @@ class MessageRepository(
     }
 
     /**
-     * Write one message to [link].
+     * Why a row cannot be sent yet, or that it can.
+     *
+     * An enum rather than a nullable session because "no session" covers three situations that
+     * need three different responses, and the pump's behaviour differs in each: wait for the
+     * handshake, wait for a connection, or give up on the row permanently.
+     */
+    private enum class SendVerdict { READY, NO_PEER_YET, NO_KEY, WRONG_PEER }
+
+    private fun sendVerdict(conversationId: String): SendVerdict {
+        val peer = _peerDeviceId.value ?: return SendVerdict.NO_PEER_YET
+        val established = ConversationId.of(identity.id, peer).value
+        if (established != conversationId) return SendVerdict.WRONG_PEER
+        return if (session != null) SendVerdict.READY else SendVerdict.NO_KEY
+    }
+
+    /**
+     * Write one message, trying every live link until one accepts it.
      *
      * @param session the key agreed with this message's peer, already checked by [pump] to
      *   belong to this conversation.
-     * @return whether the transport accepted the bytes. `false` covers both "could not read
-     *   the row" and "the write was rejected"; the two are indistinguishable from here and are
-     *   treated the same way, because the action is identical: retry later.
+     * @return whether any transport accepted the bytes. `false` covers every live link refusing
+     *   it, which is treated as one failure and retried -- from the top of the list, so a link
+     *   that has since died is simply not in it any more.
+     *
+     * ## Why this tries several links
+     *
+     * Both phones run a server and can dial, so two sockets can exist at once. On the hardware
+     * run the peer had closed one of them without this side knowing, and writing only to the
+     * newest meant every send failed on a dead socket while the older, live one went unused.
+     * Trying them in order makes the app tolerant of which socket the peer actually kept.
      *
      * ## The payload is re-encrypted here, and that is the whole fix
      *
@@ -796,12 +1019,18 @@ class MessageRepository(
      * phones agreed. That costs one extra AES operation per outgoing message and nothing else:
      * no schema change, no plaintext held anywhere longer than this function, and no path that
      * leaves the message unprotected on the wire.
+     *
+     * The encoded frame is built once and reused across links. Re-encrypting per link would
+     * produce different IVs and therefore different ciphertext for the same message, which is
+     * wasteful and would make "which copy was sent" unanswerable if two links both accepted it.
      */
-    private suspend fun deliver(
-        link: ByteLink,
+    private suspend fun deliverOnAnyLink(
         entity: MessageEntity,
         session: SessionCrypto,
     ): Boolean {
+        val candidates = liveLinks()
+        if (candidates.isEmpty()) return false
+
         // Opened with the *local* Keystore key, because that is how it was stored. Falling
         // through to the retry path when the row cannot be read is honest rather than
         // defensive: that happens after a keystore reset, and no amount of retrying fixes it.
@@ -823,8 +1052,17 @@ class MessageRepository(
             return false
         }
 
-        transition(entity, DeliveryStatus.PENDING, DeliveryStatus.SENDING)
-        return link.send(Reassembler.frame(bytes))
+        val frame = Reassembler.frame(bytes)
+        transition(entity, DeliveryStatus.SENDING)
+
+        for (live in candidates) {
+            if (live.link.send(frame)) {
+                Log.d(TAG, "sent ${entity.messageId} on link ${live.id}")
+                return true
+            }
+            Log.w(TAG, "link ${live.id} would not take ${entity.messageId}")
+        }
+        return false
     }
 
     /**
@@ -832,18 +1070,48 @@ class MessageRepository(
      *
      * The DAO's WHERE clause is what makes this safe under concurrency; the check here is
      * for a clear log line when a caller asks for something the state machine forbids.
+     *
+     * `from` is read from the database, not taken from the [MessageEntity] the caller passed
+     * in. That distinction is the entire fix, and getting it wrong is invisible.
+     *
+     * The send path moves a row PENDING -> SENDING inside [deliverOnAnyLink] and then, back in
+     * [pumpOnce], asks for PENDING -> SENT. Both calls receive the *same* `MessageEntity`
+     * instance, whose `status` field is an immutable snapshot taken when the row was read --
+     * the write inside `deliverOnAnyLink` updates the database but not that object. So a
+     * `from` read from the entity is `PENDING` on both calls, the second call's
+     * `WHERE status = 'PENDING'` matches nothing because the row is now `SENDING`, the UPDATE
+     * affects zero rows, and the message stays on "Sending" for good.
+     *
+     * An earlier version of this comment claimed the bug was fixed because `from` was derived
+     * from the row. It was not: it was derived from the row as it was *when the caller read
+     * it*, which is the stale value. Observed on hardware on 2026-10-04, with one message
+     * stuck on "Sending" while the same conversation delivered every other message normally.
+     *
+     * Reading the status back costs one indexed SELECT and makes a stale snapshot impossible
+     * to act on. `transition` also logs when the UPDATE affects zero rows, so if this ever
+     * regresses again it says so instead of failing silently.
      */
-    private suspend fun transition(
-        entity: MessageEntity,
-        from: DeliveryStatus,
-        to: DeliveryStatus,
-    ) {
-        val current = DeliveryStatus.entries.firstOrNull { it.name == entity.status } ?: return
-        if (!current.canTransitionTo(to)) {
-            Log.w(TAG, "refused ${entity.status} -> $to for ${entity.messageId}")
+    private suspend fun transition(entity: MessageEntity, to: DeliveryStatus) {
+        val current = dao.statusOf(entity.messageId)
+        if (current == null) {
+            Log.w(TAG, "no row for ${entity.messageId} when moving to $to")
             return
         }
-        dao.transition(entity.messageId, from.name, to.name)
+        val from = DeliveryStatus.entries.firstOrNull { it.name == current }
+        if (from == null) {
+            Log.w(TAG, "row ${entity.messageId} has unreadable status '$current'")
+            return
+        }
+        if (!from.canTransitionTo(to)) {
+            Log.w(TAG, "refused $current -> $to for ${entity.messageId}")
+            return
+        }
+        val changed = dao.transition(entity.messageId, from.name, to.name)
+        if (changed == 0) {
+            // Reachable only if another writer moved the row between the SELECT above and this
+            // UPDATE. Worth a line: it means the compare-and-set lost a race, which is safe.
+            Log.w(TAG, "lost race moving ${entity.messageId} $current -> $to")
+        }
     }
 
     /**
@@ -861,6 +1129,15 @@ class MessageRepository(
 
     companion object {
         private const val TAG = "MessageRepository"
+
+        /**
+         * How many superseded links are kept alive alongside the primary.
+         *
+         * Two is the realistic case: the link the user opened, and the one the peer opened at
+         * the same time. One spare beyond that absorbs a peer that re-dials while a previous
+         * socket is still closing, without letting the list grow without bound.
+         */
+        const val MAX_KEPT_LINKS = 2
 
         /**
          * Total send attempts before a message is marked FAILED.

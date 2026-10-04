@@ -31,6 +31,7 @@ data class NearbyDevice(
     val transport: Transport,
     val rssiDbm: Int?,
     val isBonded: Boolean,
+    val wifiP2pDevice: android.net.wifi.p2p.WifiP2pDevice? = null,
 ) {
     /** What to show as this device's name. */
     val displayName: String
@@ -240,11 +241,19 @@ class NearbyManager(private val context: Context) {
         return when (device.transport) {
             Transport.RFCOMM -> RfcommTransport.connect(a, device.address, device.displayName)
             Transport.GATT -> BleGattTransport.connect(context, device.address, device.displayName)
-            Transport.WIFI_DIRECT -> Result.failure(
-                UnsupportedOperationException(
-                    "Wi-Fi Direct transport is declared in the manifest but not implemented",
-                ),
-            )
+            Transport.WIFI_DIRECT -> {
+                runCatching {
+                    // Best-effort: try to connect using WifiDirectTransport
+                    val wifiDevice = device.wifiP2pDevice
+                        ?: return@runCatching Result.failure<ByteLink>(
+                            UnsupportedOperationException("Wi-Fi Direct device info not available"),
+                        )
+                    WifiDirectTransport.connect(context, wifiDevice, device.displayName)
+                }.fold(
+                    onSuccess = { it },
+                    onFailure = { e -> Result.failure(e) },
+                )
+            }
         }
     }
 

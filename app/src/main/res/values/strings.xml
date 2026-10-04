@@ -2,76 +2,80 @@
 <resources>
     <string name="app_name">iTantra Message</string>
 
-    <!-- Home -->
-    <string name="home_title">iTantra Message</string>
-    <string name="home_offline_mode">Offline Mode</string>
+    <string name="home_title">Nearby Devices</string>
+    <string name="home_offline_mode">Offline Network Active • No internet required</string>
     <string name="home_nearby_devices">Nearby Devices</string>
     <string name="home_search_nearby">Search Nearby</string>
-    <string name="home_no_devices">No nearby devices found</string>
-    <string name="home_searching">Searching…</string>
-    <string name="home_paired_devices">Paired devices</string>
+    <string name="home_no_devices">No devices found nearby</string>
+    <string name="home_searching">Searching for nearby devices...</string>
+    <string name="home_paired_devices">Paired Devices</string>
     <string name="home_device_available">Available</string>
     <string name="home_bluetooth_off">Bluetooth is off</string>
     <string name="home_turn_on_bluetooth">Turn on Bluetooth</string>
+    <!--
+      Shown only after the in-app enable request has been tried and the radio is still
+      off, which happens on builds that do not show the platform confirmation dialog.
+      Opens the system Bluetooth settings screen, where the toggle actually is.
+    -->
+    <string name="home_open_bluetooth_settings">Open Bluetooth Settings</string>
+    <string name="home_grant_permissions">Grant Permissions</string>
 
-    <!-- Connection states -->
-    <string name="state_idle">Not connected</string>
+    <string name="state_idle">Idle</string>
     <string name="state_searching">Searching</string>
     <string name="state_connecting">Connecting</string>
     <string name="state_connected">Connected</string>
     <string name="state_disconnected">Disconnected</string>
     <string name="state_connection_failed">Connection failed</string>
-    <string name="state_hosting">Waiting for a peer</string>
+    <string name="state_hosting">Hosting</string>
 
-    <!-- Chat -->
-    <string name="chat_input_hint">Type a message…</string>
+    <string name="chat_input_hint">Type a message</string>
     <string name="chat_send">Send</string>
     <string name="chat_back">Back</string>
-    <string name="chat_encrypted_notice">Messages are encrypted on this device</string>
+    <string name="chat_encrypted_notice">End-to-end encrypted • Offline</string>
 
-    <!-- Delivery status -->
     <string name="status_pending">Queued</string>
     <string name="status_sending">Sending</string>
     <string name="status_sent">Sent</string>
     <string name="status_delivered">Delivered</string>
     <string name="status_failed">Failed</string>
-    <string name="status_message_queued">Message queued</string>
+    <string name="status_message_queued">Message queued for delivery</string>
     <string name="status_message_sent">Message sent</string>
 
-    <!-- Errors. Deliberately human-readable: no stack traces, no exception class names.
-         Technical detail goes to logcat in debug builds only. See docs/ERROR_HANDLING.md. -->
-    <string name="error_permission_required">Nearby permission required</string>
-    <string name="error_permission_denied">Permission denied. Enable it in Settings to send messages.</string>
-    <string name="error_bluetooth_unavailable">Nearby connections unavailable on this device</string>
+    <string name="error_permission_required">Permissions required</string>
+    <string name="error_permission_denied">Permissions denied</string>
+    <string name="error_bluetooth_unavailable">Bluetooth unavailable</string>
     <string name="error_connection_rejected">Connection rejected</string>
     <string name="error_connection_lost">Connection lost</string>
     <string name="error_connection_timeout">Connection timed out</string>
-    <string name="error_message_too_large">Message too large to send</string>
-    <string name="error_no_peer_selected">Select a nearby device first</string>
-    <string name="error_undecryptable">Could not read that message</string>
+    <string name="error_message_too_large">Message too large</string>
+    <string name="error_no_peer_selected">No peer selected</string>
+    <string name="error_undecryptable">Message could not be decrypted</string>
     <string name="error_duplicate_ignored">Duplicate message ignored</string>
+    <string name="error_mic_permission_denied">Microphone permission denied</string>
 
-    <!-- Settings -->
     <string name="settings_title">Settings</string>
-    <string name="settings_device_name">Device name</string>
+    <string name="settings_device">Device</string>
+    <string name="settings_device_name">Device Name</string>
     <string name="settings_device_id">Device ID</string>
-    <string name="settings_permissions">Nearby permissions</string>
+    <string name="settings_permissions">Permissions</string>
     <string name="settings_encryption">Encryption</string>
     <string name="settings_storage">Storage</string>
-    <string name="settings_about">About iTantra</string>
+    <string name="settings_about">About</string>
     <string name="settings_transport">Transport</string>
-    <string name="settings_rotate_key">Rotate encryption key</string>
-    <string name="settings_fingerprint">Key fingerprint</string>
-    <string name="settings_stored_messages">Stored messages</string>
-    <string name="settings_clear_messages">Clear stored messages</string>
-    <string name="settings_messages_cleared">Stored messages cleared</string>
+    <string name="settings_rotate_key">Rotate Key</string>
+    <string name="settings_fingerprint">Session Fingerprint</string>
+    <string name="settings_stored_messages">Stored Messages</string>
+    <string name="settings_clear_messages">Clear Messages</string>
+    <string name="settings_messages_cleared">Messages cleared</string>
+    <string name="settings_language">Language</string>
+    <string name="settings_input_language">Input Language</string>
+    <string name="settings_output_language">Output Language</string>
 
-    <!-- Transport names -->
-    <string name="transport_gatt">Bluetooth Low Energy</string>
-    <string name="transport_rfcomm">Bluetooth Classic</string>
+    <string name="transport_gatt">GATT</string>
+    <string name="transport_rfcomm">RFCOMM</string>
 
-    <!-- Content descriptions -->
     <string name="cd_send">Send message</string>
-    <string name="cd_back">Navigate up</string>
+    <string name="cd_back">Back</string>
     <string name="cd_connection_state">Connection state</string>
+    <string name="cd_mic">Microphone</string>
 </resources>

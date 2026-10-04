@@ -192,7 +192,7 @@ Plus a test that the separator is safe — asserted rather than assumed, because
 every conversation resolving. If `DeviceIdentity`'s format changes, this fails with an
 explanation instead of in the field.
 
-### 4.5 `PeerHelloTest` — 21
+### 4.5 `PeerHelloTest` — 34
 
 Added after the two-phone run, because `PeerHello.kt:45` documented a property as "asserted in
 `PeerHelloTest`" and **no such file existed**. A source comment claiming a test that is not
@@ -216,6 +216,49 @@ which would otherwise let an untrusted peer name a conversation that resolves to
 
 ---
 
+### 4.6 `WhisperDecodeInstrumentedTest` — 4, on a device
+
+The only tests in the project that run outside the JVM, and they exist because of a specific
+failure worth recording.
+
+`FakeOfflineSpeechRecognizer` returned the literal string `"Hello, voice test"`. It was wired in
+through a `USE_REAL_NEURAL = false` flag, and **every unit test stayed green** while a microphone
+button in the UI produced that hardcoded sentence. The tests were not weak; they were pointed at
+the wrong thing. A mock of the recogniser cannot tell you whether the recogniser works, and
+mocking it was exactly what made the fake invisible.
+
+sherpa-onnx is JNI. It needs an ARM CPU, the real 153 MB model on a real filesystem, and
+Android's asset pipeline. None of that exists on the JVM, so these are `androidx.test`
+instrumented tests against the real engine:
+
+| test | what it asserts |
+|---|---|
+| `bundledModelExtractsAndVerifies` | the model extracts from assets to `filesDir` and every SHA-256 matches |
+| `decodesRealSpeechToRealWords` | real audio in, real words out, and the expected tokens are present |
+| `everySupportedLanguageBuildsASession` | all ten language codes build a recogniser that reports ready |
+| `silenceDecodesToEmptyRatherThanThrowing` | silence yields an empty transcript instead of aborting the process |
+
+The decode test feeds an 11.00 s, 16 kHz mono PCM16 clip of a human voice from whisper.cpp's
+sample set, through the same `pushFrame`/`endUtterance` path `SherpaSpeechRecognizer` uses. On a
+realme RMX2020 (Android 11, API 30) all four pass, and the transcript is:
+
+```
+And so my fellow Americans asked not what your country can do for you,
+ask what you can do for your country.
+```
+
+**These tests are not in `gates.yml` and cannot be.** They need a device, and CI has none. That
+is a real limitation of the project's verification story and it is why `LIMITATIONS.md` §4 lists
+it.
+
+The first version of these tests also had a bug worth recording, because it is the same shape of
+error as the fake recogniser: the WAV fixture lives in the *androidTest* APK, but the test asked
+the app under test for it, so it threw `FileNotFoundException` and the failure read like a
+missing fixture rather than a wrong context. `InstrumentationRegistry.getInstrumentation().context`
+is the right one.
+
+---
+
 ## 5. Not tested
 
 | area | why | consequence |
@@ -226,9 +269,11 @@ which would otherwise let an untrusted peer name a conversation that resolves to
 | `NearbyManager` scanning | needs a radio | permission paths are compile-checked only |
 | ViewModels | no coroutine test fixtures wired | UI state transitions unverified |
 | Compose UI | needs a device or Compose test rule | layout and accessibility untested |
+| **Live microphone capture** | needs `RECORD_AUDIO` granted | `AudioRecord` capture and the `ChatViewModel` → `SherpaSpeechRecognizer` hand-off are unverified. `RECORD_AUDIO` could not be granted programmatically on the test handset — ColorOS rejects both `pm grant` and `appops set` — and the permission dialog is only reachable from a blocker that needs a second peer. See §4.6 for what *is* covered. |
+| **STT accuracy** | needs a labelled corpus per language | word error rate for all ten languages is `NOT MEASURED`. The tests prove the recogniser produces words, not that it produces *correct* words. |
 
-`androidTest` has a runner configured and **no tests in it**. Robolectric is not in the local
-dependency cache and adding it would break the offline-reproducible build (`BUILD.md` §3.5).
+`androidTest` has **4 tests** (§4.6) and Robolectric is not in the local dependency cache;
+adding it would break the offline-reproducible build (`BUILD.md` §3.5).
 
 ### 5.1 The gap that matters most
 
@@ -348,7 +393,13 @@ line asserted the opposite of what had happened.
 
 Fixed by adding `EncryptionManager.ensureKey()`, which generates if absent and returns the
 generation it can read back, and calling that instead. Verified on both handsets
-(`RZCW31EBSZD`, API 35; `4TKNBADMCIWSNBYD`, API 30), both now logging `generation 1`.
+(Samsung Galaxy A14 5G, API 35; realme Narzo 10A, API 30), both now logging `generation 1`.
+
+Device serials and Bluetooth MAC addresses are deliberately absent from this document. They
+were here, and they were removed: a serial is a hardware identifier that identifies the physical
+device, and `docs/SECURITY.md` §4 argues at length that this app never touches one. Naming
+them in the test log would have made that argument look careless rather than principled. Model
+names and API levels are enough to reproduce every observation below.
 
 Two lessons recorded rather than quietly fixed:
 
@@ -417,20 +468,28 @@ Neither was reachable any other way. But it has not finished.
 
 ### 7.1 Observed on hardware
 
-Release build, two handsets, both bonded: a Samsung Galaxy A14 5G (`RZCW31EBSZD`, SM-A146B,
-**API 35**) and a realme Narzo 10A (`4TKNBADMCIWSNBYD`, RMX2020, **API 30**).
+Release build, two handsets, both bonded: a Samsung Galaxy A14 5G (SM-A146B, **API 35**) and a
+realme Narzo 10A (RMX2020, **API 30**). Serials and MACs are omitted deliberately — see §5.2.
 
 | observation | evidence |
 |---|---|
 | both phones open, no crash on launch | `FATAL EXCEPTION` absent from logcat on both |
 | both install and declare no `INTERNET` | `dumpsys package` on both, on-device |
 | both accept incoming RFCOMM | `RfcommServer: listening on 00001101-...` on both |
-| the identification handshake completes | `PeerIdentity: peer E4:EC:E8:A4:32:C4 announced IT-D1EAA1` |
+| the identification handshake completes | `PeerIdentity: peer 00:11:22:33:44:55 announced IT-D1EAA1` |
 | device ids are minted per device | `ItantraMessageApp: generated encryption key, generation 1` on both |
+| the bundled speech model extracts and verifies | `ModelStore: extracted …/files/whisper-base, 153 MB verified` on a realme RMX2020, API 30 |
+| Whisper transcribes real speech to real words | `DECODED in 5151ms: [And so my fellow Americans asked not what your country can do for you, …]` — 9/9 expected words |
+| all ten dictation languages build a recogniser | `SherpaNeural: recognition language now hi` through `… or`, then `WhisperDecodeTest: language or ok` |
+| silence does not crash the process | `WhisperDecodeTest: silence produced []` |
 
 That last row of the first table is the important one: the A14's device id was received,
 validated and persisted by the realme. The handshake is confirmed working **across two real
 phones**, which is more than has been true of anything else in this project.
+
+The speech rows are single-device, not two-device: Whisper needs no peer. They are recorded
+here because §7.1 is the only place in this document where hardware observation is listed, and
+putting them anywhere else would split the record of what has actually been seen.
 
 ### 7.2 Not yet observed
 
@@ -439,8 +498,13 @@ phones**, which is more than has been true of anything else in this project.
   the AES-GCM path is `NOT MEASURED` (§5.1).
 - **persistence across an app restart** (Room read-back on a real device).
 - **queue retry** when the peer is absent and returns.
-- **any latency or throughput figure.** These stay `NOT MEASURED` unless timed with a stopwatch.
-  Nothing in this document should be read as a performance claim.
+- **the live microphone path.** `RECORD_AUDIO` could not be granted programmatically on the
+  realme — ColorOS API 30 rejects both `pm grant` and `appops set` — and the permission dialog
+  is only reachable from the nearby-permission blocker, which needs a second peer present. The
+  iQOO does allow `pm grant` and this is straightforwardly testable there; it has not been done.
+- **any latency or throughput figure for messaging.** These stay `NOT MEASURED` unless timed
+  with a stopwatch. Nothing in this document should be read as a performance claim. The one
+  measured runtime figure in the project is the Whisper decode in §4.6.
 
 ### 7.3 Why a PC or emulator cannot substitute
 
