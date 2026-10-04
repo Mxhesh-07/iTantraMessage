@@ -1,7 +1,7 @@
 # iTantra Message â€” Project Presentation Pack
 
 **Package** `in.isro.sih26173.itantramessage` Â· **Version** 0.1.0 Â· **Language** Kotlin
-**Release APK** 196,626,175 bytes Â· **Unit tests** 198 per variant, 396 executions, 0 failures
+**Release APK** 196,626,175 bytes Â· **Unit tests** 211 per variant, 422 executions, 0 failures
 **Instrumented tests** 4, passing on a real handset
 **Release `INTERNET` permission** absent
 
@@ -590,7 +590,7 @@ implementation â€” the two cannot disagree.
 |---|---|
 | Is the value proposition real? | Yes. In any scenario where the network is the thing that failed, direct radio contact is the fallback that does not depend on the failure. |
 | Is the switch cost high? | Low. Install an APK, pair over Bluetooth, send. There is nothing to migrate; there are no accounts to re-create and no contact list to import. |
-| Is it maintainable? | Mixed, and honestly so. 198 unit tests across two build variants and two executable gates give 396 executions at 0 failures, and 4 instrumented tests now cover the speech engine for real. Against that: the bundled model is 160 MB of binary that no unit test can assert anything about, and 34.7 MB of the shipped artifact is third-party native code. Test coverage went up while the fraction of the app a reviewer can read went down. |
+| Is it maintainable? | Mixed, and honestly so. 211 unit tests across two build variants and two executable gates give 422 executions at 0 failures, and 4 instrumented tests now cover the speech engine for real. Against that: the bundled model is 160 MB of binary that no unit test can assert anything about, and 34.7 MB of the shipped artifact is third-party native code. Test coverage went up while the fraction of the app a reviewer can read went down. |
 | Does it lock users in? | No. Open source, no server, no proprietary format on disk. Message history is readable only with the app's own Keystore key. |
 | Does it degrade gracefully? | Yes. Absent peer â†’ queued and retried. Absent key â†’ distinct message. Unreadable row â†’ the UI says the row cannot be read rather than showing an empty chat that looks like data loss. |
 
@@ -678,9 +678,10 @@ about what the architecture makes possible, not about measured outcomes.
 | `DeliveryStatusTest` | 13 | The `PENDING â†’ SENT â†’ DELIVERED â†’ FAILED` state machine |
 | `SessionKeysCombineTest` | 12 | Both sides derive the same key from the same material |
 | `ConversationIdTest` | 11 | Stable conversation identity |
+| `ConnectFailureMessageTest` | 13 | That a failed connect names the most likely real cause, and does not blame the other phone for a fault on this one |
 | `DeviceIdentityTest` | 5 | Id format, stability, no hardware identifier involved |
 | `QueueAdvanceTest` | 5 | Queue transitions and retry exhaustion |
-| **Total** | **198** | Run in both debug and release: **396 executions, 0 failures** |
+| **Total** | **211** | Run in both debug and release: **422 executions, 0 failures** |
 
 **Four instrumented tests, which cannot run on the JVM at all:**
 
@@ -768,7 +769,7 @@ reader deciding whether this project is right for them needs to know where the e
 | Range and throughput per transport | **NOT MEASURED** |
 
 Three rows elsewhere in this document are measured, and each is labelled at the point of use: the
-196,626,175-byte release APK and the 396 passing unit-test executions are properties of a build
+196,626,175-byte release APK and the 422 passing unit-test executions are properties of a build
 artifact, and the Whisper decode â€” 11.00 s of speech in 5,151 ms, measured on a realme RMX2020 â€”
 is the one runtime measurement in the project.
 
@@ -802,6 +803,6 @@ written.
 | 17 | Offline speech â€” interfaces ready, models pending | Â§7.5, Â§6.5 |
 | 18 | Viability â€” exposure and what production-ready needs | Â§8 |
 | 19 | Impact and benefits | Â§9 |
-| 20 | Testing â€” 396 unit-test executions, 4 instrumented tests, two executable gates | Â§10 |
+| 20 | Testing â€” 422 unit-test executions, 4 instrumented tests, two executable gates | Â§10 |
 | 21 | References | Â§11 |
 | 22 | What is not measured â€” and how to close it | Â§12 |

@@ -133,7 +133,7 @@ PowerShell's `Select-String` mangles the long `e:` lines. De-wrap with:
 ### 2.2 Gates that must pass
 
 ```powershell
-.\gradlew.bat testDebugUnitTest    # exit 0, 198 tests (396 executions: debug + release)
+.\gradlew.bat testDebugUnitTest    # exit 0, 211 tests (422 executions: debug + release)
 .\gradlew.bat connectedDebugAndroidTest   # exit 0, 4 instrumented tests, needs a real device
 bash scripts/check_offline.sh      # exit 0  -- NOT exit 2
 python scripts/check_docs.py       # exit 0
@@ -357,8 +357,8 @@ Measured 2026-10-05, version 0.1.0:
 | `assembleRelease` | exit 0, 196,626,175 bytes |
 | `assembleDebug` | exit 0, 214,334,743 bytes |
 | `assembleDebugAndroidTest` | exit 0, 7,587,766 bytes |
-| `testDebugUnitTest` | exit 0, **198 tests**, 0 failures |
-| `testReleaseUnitTest` | exit 0, **198 tests**, 0 failures |
+| `testDebugUnitTest` | exit 0, **211 tests**, 0 failures |
+| `testReleaseUnitTest` | exit 0, **211 tests**, 0 failures |
 | `connectedDebugAndroidTest` | exit 0, **4 instrumented tests** — on a realme RMX2020, API 30 |
 | `check_offline.sh` | exit 0 — release clean, debug positive |
 | `check_docs.py` | exit 0 |

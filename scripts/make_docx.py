@@ -351,6 +351,11 @@ def build(src: Path, out: Path) -> int:
     out.parent.mkdir(parents=True, exist_ok=True)
     # Fixed timestamp so regenerating an unchanged source produces an identical file; a .docx
     # that churns on every run makes `git status` useless.
+    #
+    # `create_system` is pinned for the same reason, and it was found the hard way. `zipfile`
+    # leaves it at 0 on Windows and 3 on Unix, which writes one differing byte per member into
+    # the archive -- seven bytes across this file. Every part was byte-identical and the two
+    # files were both exactly 27,598 bytes, so nothing but a raw comparison found it.
     with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
         for name, payload in (
             ("[Content_Types].xml", CONTENT_TYPES),
@@ -364,6 +369,10 @@ def build(src: Path, out: Path) -> int:
             info = zipfile.ZipInfo(name, date_time=(2026, 1, 1, 0, 0, 0))
             info.compress_type = zipfile.ZIP_DEFLATED
             info.external_attr = 0o600 << 16
+            # 3 == Unix, per the PKZIP appnote. Pinned rather than left to the platform so
+            # that regenerating on Windows and on the CI runner produce the same bytes and the
+            # freshness gate in gates.yml is comparing content rather than host.
+            info.create_system = 3
             z.writestr(info, payload)
 
     return len(document)

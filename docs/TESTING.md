@@ -259,6 +259,44 @@ is the right one.
 
 ---
 
+### 4.7 `ConnectFailureMessageTest` — 13
+
+The only suite in the project that tests **wording**, and it earns its place because the wording
+is behaviour: `NearbyManager` puts the string in front of the user as
+`Could not connect to <peer>: <reason>`.
+
+It exists because the previous message was a checklist of three conditions — both phones on,
+Bluetooth on for both, the two devices paired — and all three being true describes the *ordinary*
+state of a phone that fails to connect. The checklist restated the happy path and called it a
+diagnostic. Meanwhile the failure this app actually produces, that the peer is not listening, was
+never mentioned. `RfcommServer` has to be accepting on the SPP channel, and a handset with the app
+closed satisfies every item on the old list while refusing the connection.
+
+**The function was made testable in order to be tested, not for coverage.** It was a private
+method on a class that needs a `BluetoothAdapter`; it is now a pure function on the companion
+object taking a `Throwable?`, so the whole suite runs on the JVM with no Bluetooth stack, no
+device, and no paired peer.
+
+**Two of the thirteen failed against the first implementation, and both failures were real:**
+
+- *`puts the likely cause before the raw text`* — the implementation appended the hint after the
+  raw platform text, so the one useful sentence was the one nobody would read. Android leads with
+  `read failed, socket might closed or timeout, read ret: -1`, which names nothing. Fixed by
+  moving the hint first and keeping the raw text at the end, where a developer reporting the
+  failure will look for it.
+- *`a permission failure reads as a permission failure`* — a missing `BLUETOOTH_CONNECT` surfaces
+  as a `SecurityException`, and the user was being told to go and check **the other phone** about
+  a fault on the one in their hand. The two cases now have separate text, keyed on the exception
+  type rather than the message, because the message is identical for a refused SDP lookup, an
+  out-of-range peer and an absent peer.
+
+One test asserts the message does **not** claim to know the cause — no `the cause is`, no
+`because the`, no `this means`. The platform returns one message for three different situations,
+so any confident diagnosis would be a guess, and a wrong one costs more than an honest ranked
+list.
+
+---
+
 ## 5. Not tested
 
 | area | why | consequence |

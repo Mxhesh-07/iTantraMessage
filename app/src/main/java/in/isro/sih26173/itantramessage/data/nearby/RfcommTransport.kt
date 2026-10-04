@@ -169,10 +169,16 @@ class RfcommTransport private constructor(
             .onFailure { Log.w(TAG, "cancelDiscovery (post): ${it.javaClass.simpleName}") }
 
         if (opened == null) {
+            // A timeout is a peer that never answered at all, which is a narrower set of causes
+            // than a refusal -- but "not listening" is still the first thing to check, for the
+            // same reason as [describeConnectFailure]: a phone with the app closed is
+            // indistinguishable from an absent one over the air.
             return@withContext Result.failure(
                 IOException(
                     "connect timed out after ${CONNECT_TIMEOUT_MS}ms " +
-                        "(the other phone may be out of range, off, or not paired with this one)",
+                        "(the other phone may be out of range, off, or not listening because " +
+                        "this app is not open on it; it may also simply not be paired with " +
+                        "this one)",
                 ),
             )
         }
@@ -414,21 +420,98 @@ class RfcommTransport private constructor(
     /**
      * Turn a connect failure into something a user can act on.
      *
-     * The raw exception messages from Android's Bluetooth stack are actively unhelpful --
-     * `read failed, socket might closed or timeout, read ret: -1` describes a symptom, not
-     * a cause, and appears identically whether the peer is off, the bond is stale, or the
-     * peer simply does not implement SPP. So the most likely causes are named alongside
-     * the raw text, and the raw text is kept because it is the only part that helps a
-     * developer.
+     * Delegates to [describeConnectFailure] so the wording can be tested without a Bluetooth
+     * stack. This was a private function with no test, which is how it came to say something
+     * that was true but useless.
      */
-    private fun describe(t: Throwable?): String {
-        val raw = t?.message ?: t?.javaClass?.simpleName ?: "unknown error"
-        return "$raw (check: both phones are on, Bluetooth is on for both, " +
-            "and the two devices are paired with each other in Settings > Bluetooth)"
-    }
+    private fun describe(t: Throwable?): String = describeConnectFailure(t)
 
     companion object {
         private const val TAG = "RfcommTransport"
+
+        /**
+         * The text appended to every connect failure, naming what is most likely wrong.
+         *
+         * ## Why this exists, and what it replaced
+         *
+         * The original message was a three-item checklist: both phones on, Bluetooth on
+         * for both, devices paired. All three items are true and none of them is the usual
+         * cause. A bonded phone that is powered on with Bluetooth enabled and correctly
+         * paired is the *ordinary* state of a phone that fails to connect, because the
+         * checklist describes the happy path and calls it a diagnostic.
+         *
+         * The failure this app actually produces, and the one the previous text never
+         * mentioned, is that **the peer is not listening**. `RfcommServer` has to be
+         * accepting on the SPP channel for a connection to complete, and a handset with
+         * iTantra Message closed -- or open but never having started the listener -- will
+         * accept nothing while looking perfectly connected in the system's paired list.
+         *
+         * That is a consequence of the SPP UUID being a convention rather than a guarantee,
+         * which [SPP_UUID] documents: every headset, speaker and watch in a phone's bonded
+         * list will refuse this channel too, and so will any phone that does not run this
+         * app. So the message names that case first, because it is both the most likely and
+         * the most actionable, and it keeps the pairing checks because they are still real
+         * possibilities.
+         *
+         * ## What this deliberately does not do
+         *
+         * It does not claim to know the cause. Android's Bluetooth stack returns
+         * `read failed, socket might closed or timeout, read ret: -1` for a refused SDP
+         * lookup, an out-of-range peer and a peer that is simply absent, and the message text
+         * is the only evidence available here. Distinguishing those cases would mean
+         * guessing, and a wrong confident diagnosis is worse than an honest ranked list.
+         *
+         * The raw platform text is kept, because it is the only part that helps a developer,
+         * and it is appended rather than replaced for the same reason.
+         */
+        private const val CONNECT_FAILURE_HINT: String =
+            "Most often the other phone is not listening: it must have this app open and " +
+                "connected to Bluetooth. Check that first. Also check both phones are on, " +
+                "Bluetooth is on for both, and the two are paired with each other in " +
+                "Settings > Bluetooth."
+
+        /**
+         * The text shown when a connect attempt fails because this app is missing a
+         * Bluetooth permission.
+         *
+         * Kept separate because it is a different problem with a different fix, and a user
+         * told "the other phone is not listening" when the real fault is a permission on the
+         * phone in their hand will go and check the wrong handset.
+         */
+        private const val PERMISSION_FAILURE_HINT: String =
+            "This app is missing a Bluetooth permission, so it cannot open the connection at " +
+                "all. Grant Bluetooth permission to iTantra Message in Settings > Apps > " +
+                "iTantra Message > Permissions, then try again."
+
+        /**
+         * Build the user-facing text for a failed connect attempt.
+         *
+         * Pure, and deliberately in the companion object so it can be exercised by a JVM unit
+         * test. The message is shown to the user by `NearbyManager`, so its wording is
+         * behaviour rather than diagnostics, and behaviour that nobody can test drifts.
+         *
+         * ## Why the hint comes first
+         *
+         * The platform text leads with `read failed, socket might closed or timeout, read
+         * ret: -1`, which describes a symptom, names nothing, and is the least useful sentence
+         * on screen. Putting it first means the one sentence that helps is the one nobody
+         * reads. The raw text is still kept, at the end, where a developer reporting the
+         * failure will look for it.
+         *
+         * The raw text is never dropped. When the exception carries no message the class name
+         * is used, which is better than silence because it distinguishes an `IOException` from
+         * a `SecurityException` at a glance.
+         */
+        internal fun describeConnectFailure(t: Throwable?): String {
+            val raw = t?.message?.takeIf { it.isNotBlank() }
+                ?: t?.javaClass?.simpleName
+                ?: "unknown error"
+            // Keyed on the exception type, not the message: the message is the same for a
+            // refused SDP lookup, an out-of-range peer and an absent peer, but a
+            // SecurityException is unambiguously about this device.
+            val hint = if (t is SecurityException) PERMISSION_FAILURE_HINT else CONNECT_FAILURE_HINT
+            return "$hint (platform reported: $raw)"
+        }
 
         /**
          * The Serial Port Profile UUID, `00001101-0000-1000-8000-00805f9b34fb`.
