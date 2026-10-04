@@ -148,6 +148,51 @@ jobs:
             exit 1
           fi
 
+      - name: Executable scripts are executable and have LF shebangs
+        # The same class of bug as the tokens file, found the same way: a global convenience rule
+        # that is right for almost every file and wrong for a few.
+        #
+        # `gradlew` was checked out with CRLF, which turned its shebang into `#!/usr/bin/env
+        # bash\r`. The kernel then looked for an executable named `bash\r` and every CI run
+        # died with `env: 'bash\r': No such file or directory` -- a message that points at the
+        # wrong thing entirely, and it took a run to find rather than a glance.
+        #
+        # The local working copy was LF throughout, so nothing on the author's machine could
+        # have shown this. It is only visible in a checkout, which is why it is checked in a
+        # checkout.
+        run: |
+          set -eu
+
+          # 1. gradlew must carry the executable bit.
+          mode=$(git ls-files -s gradlew | cut -d' ' -f1)
+          if [ "$mode" != "100755" ]; then
+            echo "::error::gradlew has mode $mode, expected 100755"
+            echo '::error::Run: git update-index --chmod=+x gradlew'
+            exit 1
+          fi
+          echo "gradlew is mode $mode"
+
+          # 2. Nothing with a shebang may contain a CR anywhere on its first line.
+          failed=0
+          for f in gradlew $(git ls-files '*.sh'); do
+            if head -c 200 "$f" | head -n 1 | grep -qU $'\r'; then
+              echo "::error::$f has a CR in its shebang line"
+              echo '::error::Check .gitattributes -- it needs eol=lf for this path.'
+              failed=1
+            fi
+            # 3. And it must not contain CRs at all: a shell script with CRLF breaks on
+            #    line continuations and inside [ ] comparisons, not just in the shebang.
+            if grep -qU $'\r' "$f"; then
+              echo "::error::$f contains carriage returns"
+              echo '::error::Check .gitattributes -- it needs eol=lf for this path.'
+              failed=1
+            fi
+          done
+          if [ "$failed" -ne 0 ]; then
+            exit 1
+          fi
+          echo 'every shebang script is LF-only'
+
       - name: The model files are byte-exact in the checkout
         # WHY THIS EXISTS
         # -------------

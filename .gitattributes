@@ -1,6 +1,6 @@
 # Line endings
 #
-# Kotlin, Gradle, YAML and shell sources are stored with LF and checked out with CRLF on
+# Kotlin, Gradle, YAML, Markdown and XML sources are stored with LF and checked out with CRLF on
 # Windows, so a build script edited on either platform produces the same blob and the
 # no-INTERNET gate cannot be defeated by a line-ending change to a manifest.
 * text=auto eol=crlf
@@ -11,12 +11,26 @@
 *.xml       text eol=crlf
 *.yml       text eol=crlf
 *.yaml      text eol=crlf
-*.sh        text eol=crlf
 *.md        text eol=crlf
-*.py        text eol=crlf
 *.txt       text eol=crlf
 *.pro       text eol=crlf
 *.properties text eol=crlf
+
+# LF-ON-CHECKOUT FILES. DO NOT MOVE THESE TO CRLF.
+#
+# A CRLF shebang is not cosmetic -- it is a different program name. `#!/usr/bin/env bash` becomes
+# `#!/usr/bin/env bash\r`, so the kernel looks for an executable called `bash\r`, does not find
+# one, and the script fails with `env: 'bash\r': No such file or directory`. Nothing about the
+# failure suggests line endings, which is why it cost a CI run to find.
+#
+# This is the mirror image of the tokens-file bug below: a global convenience rule that is right
+# for most files and catastrophically wrong for a few. Every one of the few is listed explicitly.
+*.sh        text eol=lf
+gradlew     text eol=lf
+*.py        text eol=lf
+
+# The mirror image of that, for the other platform: cmd.exe mis-parses an LF-only batch file.
+*.bat       text eol=crlf
 
 # Binary artifacts. Marked explicitly rather than left to Git's extension guessing.
 #
