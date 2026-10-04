@@ -306,8 +306,15 @@ jobs:
           echo 'the docs quote a release APK size that matches this build'
 
       - name: Upload the release APK
+        # Named for what it actually is. `assembleRelease` is configured with
+        # `signingConfig = signingConfigs.getByName("debug")`, and `apksigner verify` confirms a
+        # v2 signature from the Android Debug certificate. Calling it "unsigned" would be a
+        # false name on the one artifact a reviewer is most likely to download and trust.
+        #
+        # It is not production-signed and must not be shipped. The name says so, because a
+        # debug-signed release APK is otherwise indistinguishable from a real one by filename.
         uses: actions/upload-artifact@v4
         with:
-          name: app-release-unsigned
+          name: app-release-debug-signed-not-for-distribution
           path: app/build/outputs/apk/release/app-release.apk
           retention-days: 14
