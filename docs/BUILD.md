@@ -13,6 +13,54 @@ How to build iTantra Message, and why the build is configured the way it is.
 | Gradle | **8.14** (via the wrapper) | `-all` distribution, already unpacked locally |
 | AGP | **8.13.1** | |
 | Kotlin | **2.2.20** | KSP 2.2.20-2.0.4 |
+| Git LFS | **3.x** | **only for a fresh `git clone`** — see 1.3 |
+
+### 1.3 Cloning needs Git LFS, and that is a deliberate cost
+
+The speech model is committed through Git LFS:
+
+```
+$ git lfs ls-files
+0b8fb1304b * app/src/main/assets/models/whisper-base/base-encoder.int8.onnx
+9759d21738 * app/src/main/assets/models/whisper-base/base-decoder.int8.onnx
+```
+
+Those two objects are **153.2 MiB**. The rest of the repository — all the source,
+every document and every test — is **267 KiB**.
+
+**Why LFS rather than committing the files.** `base-decoder.int8.onnx` is
+130,672,026 bytes. GitHub rejects any blob over 100 MiB, so committing it directly
+makes `git push` fail outright. That is a hard limit, not a warning.
+
+**Why LFS rather than leaving the model out.** The alternative was to not commit
+the model at all and document a download step. That was rejected: it would leave a
+fresh clone unable to build an app that can actually dictate, which is the one
+capability this project exists to demonstrate. A model fetched from a URL is also
+not verifiable at build time — `ModelStore` verifies SHA-256 on device, but a
+clone that arrives without the model fails much later and less clearly than one
+that fails on the missing LFS checkout.
+
+**The cost, stated plainly:** anyone cloning needs `git-lfs` installed, or the
+`.onnx` files arrive as 130-byte pointer files and Gradle packages a broken app.
+GitHub's own web UI and clone integration handle LFS transparently, so this bites
+only local command-line clones.
+
+**How to tell whether a clone is intact** — the LFS SHA-256 is the same digest
+recorded in the README beside the model files, so it is a real check rather than a
+reassuring one:
+
+```bash
+git lfs fsck                      # verifies every LFS object against its pointer
+ls -l app/src/main/assets/models/whisper-base/
+# base-decoder.int8.onnx  130672026   <- not 130 bytes, which would be a pointer
+```
+
+A build that packages a pointer file still succeeds. The instrumented test
+`bundledModelExtractsAndVerifies` is what catches it, because `ModelStore` compares
+the extracted file against the expected SHA-256 and discards a mismatch.
+
+`base-tokens.txt` (817 KB) and the test WAV (352 KB) are ordinary git files, not
+LFS, so they can be read and diffed without an LFS client.
 
 ### 1.1 `JAVA_HOME` is not set in this environment
 

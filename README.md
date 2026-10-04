@@ -60,6 +60,12 @@ not by the test. **Word error rate for the nine Indian languages is `NOT MEASURE
 
 ## Build and verify
 
+A fresh clone needs **Git LFS**, because the Whisper model is 153.2 MiB and
+`base-decoder.int8.onnx` is over GitHub's 100 MiB per-file limit. Without it the
+`.onnx` files arrive as pointer stubs and the build packages a broken app - verify
+with `git lfs fsck`, and see `docs/BUILD.md` §1.3. The whole rest of the
+repository is 267 KiB.
+
 `JAVA_HOME` is not set in this environment, so every command needs it:
 
 ```powershell
