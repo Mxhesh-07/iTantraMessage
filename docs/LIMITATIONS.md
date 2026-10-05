@@ -194,7 +194,7 @@ Stated literally rather than estimated. Each is a real gap.
 | Throughput | **NOT MEASURED** |
 | Encryption round-trip latency | **NOT MEASURED** |
 | Cold start time | **NOT MEASURED** |
-| Memory footprint of the app process in the UI | **NOT MEASURED** — the 624 MB and 179 MB figures in `PERFORMANCE.md` §1 come from the instrumented test process, which includes ART and the JUnit runner |
+| Memory footprint of the app process in the UI | **NOT MEASURED** — the 624–663 MB and 179 MB figures in `PERFORMANCE.md` §1 come from the instrumented test process, which includes ART and the JUnit runner |
 | Battery drain over 24 h idle | **NOT MEASURED** |
 | UI frame times / jank on a low-end device | **NOT MEASURED** |
 | Behaviour on Android 7.0 (minSdk 24) | **NOT MEASURED** — compiles and is packaged, never run |

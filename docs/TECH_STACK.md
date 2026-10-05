@@ -99,7 +99,7 @@ rewritten against code that actually runs.
 | **Zipformer / IndicConformer (streaming ASR)** | **NOT IMPLEMENTED** |
 | **VITS / Piper (neural TTS)** | **NOT IMPLEMENTED** |
 | Word error rate, per language | **NOT MEASURED** |
-| App-process RAM, unload time | **NOT MEASURED** in the UI (624 MB and 179 MB were read in the instrumented test process; see `PERFORMANCE.md` §1) |
+| App-process RAM, unload time | **NOT MEASURED** in the UI (624–663 MB and 179 MB were read in the instrumented test process; see `PERFORMANCE.md` §1) |
 | `LanguageModelCache` (`core/neural/`) | **NOT IMPLEMENTED** — unreferenced |
 
 `app/src/main/assets/models/` holds the real Whisper base int8 model: 160,609,290 bytes across
@@ -144,7 +144,7 @@ confidence.
 |---|---|
 | Gradle + KSP, R8 minify + resource shrinking (release) | IMPLEMENTED |
 | Release APK | 196,626,175 bytes, no `INTERNET` |
-| Debug APK | 214,334,743 bytes, has `INTERNET` (the negative control) |
+| Debug APK | 214,261,177 bytes, has `INTERNET` (the negative control) |
 | Unit tests | 211 per variant, 422 executions, 0 failures |
 | Instrumented tests | 4, passing on a real handset; need a device, not in the `gates.yml` unit gate |
 | Doc gate | `scripts/check_docs.py` |

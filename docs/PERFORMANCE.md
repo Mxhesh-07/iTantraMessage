@@ -16,10 +16,10 @@ Inventing the rest would make this file worse than an empty one.
 | cold start | **NOT MEASURED** |
 | warm start | **NOT MEASURED** |
 | APK size (release) | **196,626,175 bytes** — measured (`ls` on `app-release.apk`) |
-| APK size (debug) | **214,334,743 bytes** — measured (`ls` on `app-debug.apk`) |
-| APK size (androidTest) | **7,587,766 bytes** — measured |
-| STT decode, 11.00 s of speech | **5,151 ms** — measured, realme RMX2020, real-time factor ≈0.47× |
-| STT peak process RSS | **624 MB** — measured, but see the caveat below |
+| APK size (debug) | **214,261,177 bytes** — measured (`ls` on `app-debug.apk`) |
+| APK size (androidTest) | **748,175 bytes** — measured |
+| STT decode, 11.00 s of speech | **5,151–6,545 ms** over three runs — measured, realme RMX2020, real-time factor 0.47–0.60× |
+| STT peak process RSS | **624–663 MB** over three runs — measured, but see the caveat below |
 | send-to-visible latency | **NOT MEASURED** |
 | decrypt-and-display latency | **NOT MEASURED** |
 | scroll frame time, 100 messages | **NOT MEASURED** |
@@ -31,18 +31,35 @@ Inventing the rest would make this file worse than an empty one.
 | speech model extraction time, first run | **NOT MEASURED** |
 | model load-to-first-result latency | **NOT MEASURED** |
 
-**The RSS figure needs its caveat read with it.** 624 MB was read from the *instrumented test*
+**The RSS figure needs its caveat read with it.** 624–663 MB was read from the *instrumented test*
 process, which contains ART, the JUnit runner and the test's own buffers alongside the
 recogniser, so it **overstates** what the app itself costs. For scale: the same process sat at
 179 MB while cycling all ten languages and fell to 105 MB after release, which is the part of
 the figure that is attributable to the engine. The app's own steady-state footprint in the UI
 is **NOT MEASURED**.
 
-Both size figures and the decode figures were refreshed on 2026-10-05 from
+All size figures and the decode figures were refreshed on 2026-10-05 from
 `app/build/outputs/apk/` and from logcat during `WhisperDecodeInstrumentedTest`. The sizes
 grew by roughly 150× when the Whisper base int8 model was bundled into the APK — every size
 number in this repository predating that change was wrong, and a stale number is the same
 class of error as a fabricated one.
+
+**Why the decode and RSS figures are ranges, not single numbers.** They were first recorded as
+one sample each: 5,151 ms and 624 MB. Re-running the same test on the same handset with the
+same audio gave 5,497 ms and 627 MB, then 6,545 ms and 663 MB. A 27% spread across three runs
+of an identical workload means a single sample was never a measurement of the decode time — it
+was a measurement of one run, and quoting it alone overstated the precision by an order of
+magnitude more than the figure deserved. The ranges above are the honest form; `NOT MEASURED`
+would have been the other honest answer, and range is only preferable because there are three
+real samples behind it. Peak RSS varies with how much the allocator has kept from the previous
+run, which is why it tracks the decode time rather than moving independently.
+
+**Why the size gate now checks all three APKs.** The CI gate originally compared only the
+release APK against the figure in this table. That is the artifact that ships, so it was a
+reasonable first choice — and it still let the debug and androidTest figures drift stale
+together, because nothing re-derived them. Both were caught on 2026-10-05 only by rebuilding
+them by hand and comparing. The gate now checks all three, because a table that reports three
+sizes should be able to prove all three.
 
 **Why nothing else runtime has been measured:** it requires two paired handsets, and a message
 has not yet been delivered end to end. See `TESTING.md` §7.
