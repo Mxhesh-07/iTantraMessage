@@ -295,15 +295,24 @@ jobs:
         # real 196,624,703, which is off by a factor of 144, not by a rounding error -- while
         # surviving an incidental difference between build hosts.
         #
-        # A NOTE ON THE SMALLER ARTIFACTS, HONESTLY
-        # -----------------------------------------
-        # 5% of the release APK is about 9.8 MB of slack. 5% of the 748 KB androidTest APK is
-        # 37 KB. The same percentage is a far weaker guarantee on the small artifact, so if this
-        # step ever fails on the androidTest row alone, suspect cross-host variation before
-        # concluding the docs are stale -- compare the two builds on the same host first. Widen
-        # the tolerance with a recorded reason rather than pre-emptively, because the previous
-        # defects this step was written to catch were off by factors of 10 and 144, not by
-        # tens of kilobytes.
+        # A NOTE ON THE TOLERANCE, AND WHAT WAS ACTUALLY MEASURED
+        # -------------------------------------------------------
+        # 5% of the release APK is about 9.8 MB of slack; 5% of the 748 KB androidTest APK is
+        # 37 KB. The same percentage is a much weaker guarantee on the small artifact, so it
+        # is worth recording what cross-host variation actually looks like rather than
+        # guessing at it.
+        #
+        # Measured 2026-10-05: a build made on Windows and a build of the same commit on
+        # ubuntu-latest produced byte-identical APKs for all three artifacts -- 196,626,175,
+        # 214,261,177 and 748,175. So the tolerance is not absorbing a known host difference;
+        # it is headroom against a future toolchain bump changing the output, which is a real
+        # risk and has not happened yet.
+        #
+        # That evidence is also an argument for tightening to an exact match, and it was
+        # deliberately not tightened. An exact gate turns every future dependency or AGP
+        # update into a red build a human has to triage, and this step exists to catch
+        # documentation drift, not to become a canary for the build system. If the sizes ever
+        # do start moving, record the new figures and the reason in the same commit.
         run: |
           set -eu
 
